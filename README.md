@@ -1685,6 +1685,59 @@ Vercel 때와 마찬가지로, 이 샌드박스는 보안 정책상 Cloudflare A
    커스텀 도메인을 연결하고 싶으면 Cloudflare 대시보드의 해당 워커 > Settings >
    Domains & Routes에서 추가할 수 있습니다.
 
+### 문제 해결: `npx wrangler login`/`cf:deploy`가 회사망·VPN에서 "fetch failed"로 실패하는 경우
+
+`wrangler`가 직접 다음과 같이 알려주는 경우입니다:
+
+> Wrangler detected that a corporate proxy or VPN might be enabled on your
+> machine, resulting in API calls failing due to a certificate mismatch.
+
+이건 이 프로젝트의 국토부 API 호출이 회사망에서 실패하던 것(README 13-1·13-2번)과
+**원인이 완전히 같습니다** — 회사·기관 네트워크나 보안 소프트웨어가 HTTPS
+트래픽을 가로채 자체 서명 인증서로 다시 서명하는 "TLS 검사"를 하는데, Node
+(wrangler도 Node로 동작합니다)는 이 자체 서명 인증서를 기본적으로 신뢰하지
+않기 때문입니다. Windows의 인증서 저장소(다른 프로그램·브라우저가 쓰는 곳)에는
+이미 그 인증서가 등록돼 있어도, Node는 그걸 자동으로 같이 쓰지 않고 별도로
+알려줘야 합니다.
+
+**해결 방법 (권장) — 회사 루트 인증서를 Node에 알려주기:**
+
+1. Windows 검색에서 `certmgr.msc`(현재 사용자용) 실행 → 왼쪽에서 **신뢰할 수 있는
+   루트 인증 기관 > 인증서**로 이동합니다.
+2. 목록에서 일반적인 공인 인증기관(DigiCert, Let's Encrypt 등)이 아니라 회사
+   이름이나 보안 제품 이름(예: Zscaler, Netskope, Forcepoint, Palo Alto, Cisco
+   Umbrella, Fortinet 등)이 붙은 인증서를 찾습니다 — 이미 README 13-1번에서
+   국토부 API 문제로 이 인증서를 찾아 내보낸 적이 있다면 그 파일을 그대로
+   재사용하면 됩니다.
+3. 그 인증서를 오른쪽 클릭 → **모든 작업 > 내보내기** → "Base-64 로 인코딩된
+   X.509(.CER)" 형식으로 선택해 예를 들어 `C:\certs\corp-root.cer`로 저장합니다.
+4. 아래처럼 `NODE_EXTRA_CA_CERTS`를 설정한 뒤 같은 터미널 창에서 다시
+   `npx wrangler login`(또는 `npm run cf:deploy`)을 실행합니다.
+
+   명령 프롬프트(cmd)인 경우:
+   ```
+   set NODE_EXTRA_CA_CERTS=C:\certs\corp-root.cer
+   npx wrangler login
+   ```
+   PowerShell인 경우:
+   ```
+   $env:NODE_EXTRA_CA_CERTS = "C:\certs\corp-root.cer"
+   npx wrangler login
+   ```
+   매번 새로 설정하기 번거로우면 "시스템 환경 변수 편집"에서 `NODE_EXTRA_CA_CERTS`를
+   영구적으로 추가해 두고 터미널을 새로 열면 계속 적용됩니다.
+
+**그래도 안 되거나 회사 인증서를 구하기 어려운 경우 (임시 우회, 신뢰할 수 있는 회사망에서만):**
+
+```
+set NODE_TLS_REJECT_UNAUTHORIZED=0
+npx wrangler login
+```
+이 방법은 그 터미널에서 실행하는 Node 프로세스의 인증서 검증 자체를 전부
+꺼버리는 것이라(README의 `MOLIT_ALLOW_INSECURE_TLS`와 같은 종류의 절충입니다),
+공용 와이파이 등 신뢰할 수 없는 네트워크에서는 쓰지 말고, 로그인/배포가 끝나면
+그 환경변수를 다시 지우는 것을 권장합니다.
+
 ### 검증
 
 Cloudflare 계정 인증이 필요한 실제 `wrangler deploy`는 이 샌드박스에서 실행할 수
