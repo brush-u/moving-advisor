@@ -6,13 +6,20 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "cf:preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+    "cf:deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "cf:typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts"
   },
   "dependencies": {
+    "@opennextjs/cloudflare": "^1.15.1",
     "leaflet": "1.9.4",
     "next": "14.2.35",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "undici": "^6.28.1"
+  },
+  "devDependencies": {
+    "wrangler": "^4.130.0"
   }
 }

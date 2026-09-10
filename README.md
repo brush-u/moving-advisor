@@ -1614,3 +1614,89 @@ Playwright로 데스크톱(1280×900)·휴대폰(390×844) 두 화면 크기에�
 확인했습니다. `rm -rf .next node_modules && npm install && npm run build`로
 처음부터 다시 빌드해 오류 없이 통과하는 것, API 키 미설정 시에도 `/api/recommend`가
 정상적으로 참고값 모드로 동작하는 것을 확인했습니다.
+
+## 31. Cloudflare Workers 배포 지원 추가
+
+웹 배포처를 Vercel 대신 Cloudflare(Workers)로 바꿔달라는 요청에 따라, 이 프로젝트를
+Cloudflare에 올릴 수 있도록 설정을 추가했습니다. Cloudflare는 최근 Next.js를
+Cloudflare Workers에 올리는 방법으로 새 도구인 "vinext"를 기본으로 안내하고
+있지만, 이 프로젝트처럼 이미 완성된 표준 Next.js 앱(스트리밍 API 응답, 커스텀
+fetch 등)에는 훨씬 오래 검증된 **OpenNext Cloudflare 어댑터**
+(`@opennextjs/cloudflare`)가 더 안전하다고 판단해 그쪽을 사용했습니다. Next.js
+버전(14.2.35)과 정확히 호환되는 `@opennextjs/cloudflare@1.15.1` + `wrangler@^4.59.2`
+조합을 선택했습니다(최신 버전은 Next 15 이상을 요구해서 이 프로젝트에는 설치할 수
+없었습니다).
+
+### 추가/변경된 파일
+
+- `wrangler.jsonc`(신규): Cloudflare Workers 배포 설정. 워커 이름(`moving-advisor`),
+  진입점(`.open-next/worker.js`), Node.js 호환 플래그(`nodejs_compat`), 정적 파일
+  서빙(`assets`) 등을 지정합니다.
+- `open-next.config.ts`(신규): OpenNext 빌드 설정. 이 프로젝트는 ISR/정적 재생성을
+  쓰지 않아 기본값 그대로(`defineCloudflareConfig()`)면 충분합니다.
+- `next.config.mjs`: `next dev`로 로컬 개발할 때도 Cloudflare 바인딩에 접근할 수
+  있게 해주는 `initOpenNextCloudflareForDev()`를 추가했습니다(try/catch로 감싸서
+  패키지가 없어도 개발 서버 자체는 깨지지 않게 했습니다).
+- `public/_headers`(신규): 빌드마다 파일명에 해시가 붙는 `/_next/static/*` 정적
+  파일을 1년 장기 캐시하도록 지정합니다.
+- `package.json`: `cf:preview`(로컬에서 실제 Workers 런타임으로 미리보기),
+  `cf:deploy`(빌드+배포), `cf:typegen` 스크립트를 추가했습니다. 기존
+  `dev`/`build`/`start`는 그대로 남아 있어 Vercel이나 일반 Node 호스팅에도 여전히
+  쓸 수 있습니다.
+- `.gitignore`: OpenNext/Wrangler가 매 빌드마다 새로 만드는 `.open-next/`,
+  `.wrangler/`, `cloudflare-env.d.ts`, `.dev.vars`를 제외했습니다.
+
+### `undici` 지연 로딩으로 변경 (Cloudflare 배포 시 중요한 버그 수정)
+
+`lib/molit.js`와 `lib/netFetch.js`는 회사·기관 네트워크의 TLS 검사를 우회하는
+선택 기능(`MOLIT_ALLOW_INSECURE_TLS=1`, README 13-2번)을 위해 `undici` 패키지를
+맨 위에서 정적으로 `import`하고 있었습니다. 이 상태로 Cloudflare Workers에
+올려보니(로컬에서 `npx wrangler dev`로 실제 Workers 런타임 위에서 테스트),
+그 기능을 켜지 않았는데도(API 키 미설정 상태에서도) `/api/recommend` 같은
+API 라우트가 전부 `ReferenceError: WeakRef is not defined`로 500 에러가
+났습니다 — `undici` 모듈이 로드되는 것만으로 내부적으로 `WeakRef`(Workers
+런타임에 없는 전역 객체)를 참조하기 때문이었습니다. 이 기능은 애초에 로컬
+PC/회사망의 TLS 검사를 우회하기 위한 것이라 Cloudflare 서버에서는 필요하지도
+않으므로, `import("undici")`로 **그 기능이 실제로 켜졌을 때만** 지연 로딩하도록
+두 파일을 고쳤습니다 — 평소(대부분의 경우)에는 `undici`가 아예 로드되지 않아
+Cloudflare Workers에서도 문제없이 동작하고, 로컬 회사망 우회 기능 자체는 이전과
+동일하게 그대로 씁니다.
+
+### 배포 방법 (사용자가 직접 실행해야 하는 단계)
+
+Vercel 때와 마찬가지로, 이 샌드박스는 보안 정책상 Cloudflare API에 직접
+접속(로그인·배포)할 수 없습니다 — `npx wrangler dev`로 로컬 미리보기까지는
+확인했지만, 실제 `wrangler deploy`는 사용자의 Cloudflare 계정 인증이 필요해
+사용자의 컴퓨터에서 직접 실행해야 합니다.
+
+1. (최초 1회) [Cloudflare 계정](https://dash.cloudflare.com/sign-up)을 만듭니다(무료).
+2. 프로젝트 폴더에서 `npm install` 실행(이미 `wrangler`, `@opennextjs/cloudflare`가
+   `package.json`에 포함돼 있어 자동으로 설치됩니다).
+3. `npx wrangler login` 실행 — 브라우저가 열리면 Cloudflare 계정으로 로그인하고
+   권한을 승인합니다.
+4. API 키를 쓰고 있다면(README 4·22번), Cloudflare 대시보드의 Workers & Pages >
+   해당 워커 > Settings > Variables and Secrets에서 `MOLIT_SERVICE_KEY` 등을
+   추가하거나, 터미널에서 `npx wrangler secret put MOLIT_SERVICE_KEY`로 등록합니다
+   (`.env.local`은 로컬 전용이라 배포된 워커에는 자동으로 전달되지 않습니다).
+5. `npm run cf:deploy` 실행 — 이 명령이 `next build`→OpenNext 변환→
+   `wrangler deploy`를 순서대로 해줍니다. 완료되면 터미널에 실제 배포 주소
+   (`https://moving-advisor.<계정서브도메인>.workers.dev`)가 출력됩니다.
+6. 이후 코드를 고칠 때마다 `npm run cf:deploy`만 다시 실행하면 재배포됩니다.
+   커스텀 도메인을 연결하고 싶으면 Cloudflare 대시보드의 해당 워커 > Settings >
+   Domains & Routes에서 추가할 수 있습니다.
+
+### 검증
+
+Cloudflare 계정 인증이 필요한 실제 `wrangler deploy`는 이 샌드박스에서 실행할 수
+없었지만, 그 앞 단계까지는 전부 실제로 실행해 확인했습니다: `npx
+opennextjs-cloudflare build`로 OpenNext 번들(`.open-next/worker.js`)을 만드는
+것, `npx wrangler dev --local`로 그 번들을 실제 workerd(Cloudflare Workers와
+동일한 런타임) 위에서 띄우는 것, 그 위에서 홈페이지·`/api/recommend`·
+`/api/subway`·`/api/district-search`(예산 자동계산)·`/api/candidate-coords`
+(NDJSON 스트리밍 응답) 전부 정상 응답하는 것을 curl로 확인했습니다. Playwright로
+그 Workers 런타임 위에서 실제 화면을 열어 조건 패널(30번)이 정상 동작하고
+"이사 갈 곳 추천받기"를 눌러 결과 목록·지도가 정상적으로 렌더링되는 것까지
+스크린샷으로 확인했습니다. 이 과정에서 `undici` 관련 버그(위 항목)를 실제로
+발견하고 고쳤습니다. 고친 뒤 기존 `npm run build`/`npm run start`(Vercel·일반
+Node 호스팅 경로)도 여전히 API 키 미설정 상태에서 정상 동작하는 것을 다시
+확인해 회귀가 없음을 검증했습니다.
