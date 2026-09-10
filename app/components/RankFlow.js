@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import { districts as allDistricts, groupDistrictsBySido, sidoShort } from "../../lib/districts";
 import { scoreToColor, DISTRICT_MARKER_COLOR, budgetFitColor, SUBWAY_MARKER_COLOR } from "./mapColors";
@@ -8,7 +8,7 @@ import { haversineKm } from "../../lib/scoring";
 import { unlockDartAudio } from "./dartAudio";
 import useSubwayStations from "./useSubwayStations";
 import RangeSlider from "./RangeSlider";
-import WizardProgress from "./WizardProgress";
+import SlideDrawer from "./SlideDrawer";
 
 const LeafletMap = dynamic(() => import("./LeafletMap"), { ssr: false });
 
@@ -133,12 +133,11 @@ const MIN_SUSPENSE_MS = 1300;
 const RANK_INITIAL_VISIBLE = 10;
 const RANK_PAGE_SIZE = 10; // "더보기"를 누를 때마다 이만큼씩 추가로 펼침
 
-// 입력 폼을 한 화면에 다 몰아넣지 않고 "위치 -> 조건 -> 중요도" 3단계 슬라이드로 나눠
-// 보여줍니다(사용자 요청 — 특히 휴대폰에서 스크롤이 너무 길어지는 문제 개선). 각 단계는
-// 기존 h2 번호("1. 어디서부터...", "2. 원하는 집 조건", "3. 무엇을 가장 중요하게...")와
-// 그대로 대응합니다.
-const RANK_WIZARD_LABELS = ["위치", "조건", "중요도"];
-const RANK_TOTAL_STEPS = RANK_WIZARD_LABELS.length;
+// 지도(위치 선택)는 항상 메인 화면에 보이고, "원하는 집 조건"+"무엇을 가장 중요하게"는
+// 버튼을 눌러야 오른쪽에서 슬라이드로 나타나는 패널 안에 넣습니다(사용자가 다른 서비스의
+// 필터 패널 예시를 보여주며 요청 — README 30번. 이전엔 "다음/이전" 버튼으로 넘기는
+// 3단계 마법사였는데, "버튼 말고 오른쪽에서 슬라이드로"라는 명확한 피드백을 받아 이 방식
+// 으로 바꿨습니다).
 
 function budgetLabelFor(dealType) {
   if (dealType === "jeonse") return "목표 전세보증금";
@@ -164,22 +163,8 @@ export default function RankFlow() {
   const [selectedSido, setSelectedSido] = useState("서울특별시");
   const [sidoGeo, setSidoGeo] = useState(null); // 전국 시/도 경계(GeoJSON) — "시/도로 찾기"를 처음 쓸 때만 불러옵니다
 
-  const [step, setStep] = useState(1);
-  const formTopRef = useRef(null);
-
-  // 단계를 넘길 때마다(특히 짧은 단계 <-> 긴 단계 이동 시) 이전 스크롤 위치에 그대로 있으면
-  // 화면 중간의 어색한 위치에 뚝 떨어지므로, 폼 맨 위로 부드럽게 스크롤해 새 단계가 항상
-  // 위에서부터 보이게 합니다.
-  useEffect(() => {
-    formTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [step]);
-
-  function goToNextStep() {
-    setStep((s) => Math.min(s + 1, RANK_TOTAL_STEPS));
-  }
-  function goToPrevStep() {
-    setStep((s) => Math.max(s - 1, 1));
-  }
+  // "원하는 집 조건 · 중요도" 슬라이드 패널이 열려 있는지.
+  const [conditionsDrawerOpen, setConditionsDrawerOpen] = useState(false);
 
   const [budgetMin, setBudgetMin] = useState(BUDGET_FLOOR);
   const [budgetMax, setBudgetMax] = useState(BUDGET_CEIL);
@@ -403,263 +388,263 @@ export default function RankFlow() {
         거래 단지까지 찾아드립니다.
       </p>
 
-      <form className="panel" onSubmit={handleSubmit} ref={formTopRef}>
-        <WizardProgress step={step} labels={RANK_WIZARD_LABELS} />
+      <form className="panel" onSubmit={handleSubmit}>
+        <h2>1. 어디서부터 찾아볼까요?</h2>
 
-        {/* 단계마다 컴포넌트를 새로 마운트해(key={step}) 넘길 때 살짝 슬라이드해 들어오는
-            느낌을 주고, 이전 단계의 지도 등 무거운 컴포넌트를 계속 켜 두지 않게 합니다.
-            위치(origin/radiusKm 등)는 이 컴포넌트 자체의 state라 단계를 오가도 값은 그대로
-            유지됩니다 — 다시 마운트되는 건 화면(지도 인스턴스)뿐입니다. */}
-        <div className="wizard-step" key={step}>
-          {step === 1 && (
-            <>
-              <h2>1. 어디서부터 찾아볼까요?</h2>
+        <div className="search-mode-toggle">
+          <button
+            type="button"
+            className={`toggle-tab ${searchMode === "radius" ? "active" : ""}`}
+            onClick={() => selectSearchMode("radius")}
+          >
+            반경으로 찾기
+          </button>
+          <button
+            type="button"
+            className={`toggle-tab ${searchMode === "sido" ? "active" : ""}`}
+            onClick={() => selectSearchMode("sido")}
+          >
+            시/도로 찾기
+          </button>
+        </div>
 
-              <div className="search-mode-toggle">
-                <button
-                  type="button"
-                  className={`toggle-tab ${searchMode === "radius" ? "active" : ""}`}
-                  onClick={() => selectSearchMode("radius")}
-                >
-                  반경으로 찾기
-                </button>
-                <button
-                  type="button"
-                  className={`toggle-tab ${searchMode === "sido" ? "active" : ""}`}
-                  onClick={() => selectSearchMode("sido")}
-                >
-                  시/도로 찾기
-                </button>
-              </div>
+        {searchMode === "radius" ? (
+          <p className="note" style={{ marginBottom: 10 }}>
+            지도 클릭 또는 위치 버튼(⊙)으로 중심점을 정하세요.
+          </p>
+        ) : (
+          <p className="note" style={{ marginBottom: 10 }}>
+            지도에서 시/도를 클릭해 선택하세요(목록에서 골라도 됩니다).
+          </p>
+        )}
 
-              {searchMode === "radius" ? (
-                <p className="note" style={{ marginBottom: 10 }}>
-                  지도 클릭 또는 위치 버튼(⊙)으로 중심점을 정하세요.
-                </p>
-              ) : (
-                <p className="note" style={{ marginBottom: 10 }}>
-                  지도에서 시/도를 클릭해 선택하세요(목록에서 골라도 됩니다).
-                </p>
-              )}
+        <div className="map-wrap">
+          <LeafletMap
+            center={searchMode === "sido" ? sidoFocusCenter : { lat: origin.lat, lng: origin.lng }}
+            zoom={searchMode === "sido" ? KOREA_ZOOM : pickerZoom}
+            markers={[
+              {
+                id: "origin",
+                lat: origin.lat,
+                lng: origin.lng,
+                color: DISTRICT_MARKER_COLOR,
+                landing: true,
+                popupHtml: `<strong>${origin.label}</strong>`,
+              },
+              ...(searchMode === "radius"
+                ? originSubwayStations.map((s) => ({
+                    id: `subway::${s.id}`,
+                    lat: s.lat,
+                    lng: s.lng,
+                    color: SUBWAY_MARKER_COLOR,
+                    size: 8,
+                    popupHtml: `<strong>${s.name}</strong><br/>지하철역`,
+                  }))
+                : []),
+            ]}
+            interactive
+            onMapClick={handleMapClick}
+            circle={searchMode === "radius" ? { lat: origin.lat, lng: origin.lng, radiusKm } : null}
+            userLocation={userLocation}
+            focus={searchMode === "sido" ? { ...sidoFocusCenter, zoom: KOREA_ZOOM } : { lat: origin.lat, lng: origin.lng, zoom: pickerZoom }}
+            focusKey={focusNonce}
+            dropKey={launchNonce}
+            height={320}
+            sidoBoundaries={
+              searchMode === "sido" ? { data: sidoGeo, selectedName: selectedSido, onSelect: handleSidoBoundarySelect } : null
+            }
+          />
+          <button
+            type="button"
+            className="map-locate-btn"
+            onClick={handleUseMyLocation}
+            disabled={locating}
+            title="내 위치 사용"
+            aria-label="내 위치 사용"
+          >
+            {locating ? (
+              "…"
+            ) : (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <circle cx="12" cy="12" r="3" fill="currentColor" />
+                <path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+            )}
+          </button>
+        </div>
 
-              <div className="map-wrap">
-                <LeafletMap
-                  center={searchMode === "sido" ? sidoFocusCenter : { lat: origin.lat, lng: origin.lng }}
-                  zoom={searchMode === "sido" ? KOREA_ZOOM : pickerZoom}
-                  markers={[
-                    {
-                      id: "origin",
-                      lat: origin.lat,
-                      lng: origin.lng,
-                      color: DISTRICT_MARKER_COLOR,
-                      landing: true,
-                      popupHtml: `<strong>${origin.label}</strong>`,
-                    },
-                    ...(searchMode === "radius"
-                      ? originSubwayStations.map((s) => ({
-                          id: `subway::${s.id}`,
-                          lat: s.lat,
-                          lng: s.lng,
-                          color: SUBWAY_MARKER_COLOR,
-                          size: 8,
-                          popupHtml: `<strong>${s.name}</strong><br/>지하철역`,
-                        }))
-                      : []),
-                  ]}
-                  interactive
-                  onMapClick={handleMapClick}
-                  circle={searchMode === "radius" ? { lat: origin.lat, lng: origin.lng, radiusKm } : null}
-                  userLocation={userLocation}
-                  focus={searchMode === "sido" ? { ...sidoFocusCenter, zoom: KOREA_ZOOM } : { lat: origin.lat, lng: origin.lng, zoom: pickerZoom }}
-                  focusKey={focusNonce}
-                  dropKey={launchNonce}
-                  height={320}
-                  sidoBoundaries={
-                    searchMode === "sido" ? { data: sidoGeo, selectedName: selectedSido, onSelect: handleSidoBoundarySelect } : null
-                  }
-                />
-                <button
-                  type="button"
-                  className="map-locate-btn"
-                  onClick={handleUseMyLocation}
-                  disabled={locating}
-                  title="내 위치 사용"
-                  aria-label="내 위치 사용"
-                >
-                  {locating ? (
-                    "…"
-                  ) : (
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                      <circle cx="12" cy="12" r="3" fill="currentColor" />
-                      <path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                    </svg>
-                  )}
-                </button>
-              </div>
-
-              {searchMode === "radius" ? (
-                <div className="field">
-                  <label htmlFor="radius">
-                    검색 반경: <strong>{radiusKm}km</strong> 안 {inRangeCount}개 지역
-                  </label>
-                  <input
-                    id="radius"
-                    type="range"
-                    min="3"
-                    max="50"
-                    step="1"
-                    value={radiusKm}
-                    onChange={(e) => setRadiusKm(Number(e.target.value))}
-                  />
-                </div>
-              ) : (
-                <div className="field">
-                  <label htmlFor="sido">시/도 선택</label>
-                  <select id="sido" value={selectedSido} onChange={(e) => setSelectedSido(e.target.value)}>
-                    {SIDO_LIST.map((s) => (
-                      <option key={s} value={s}>{s}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              <p className="note" style={{ marginTop: 6 }}>
-                현재 검색 중심점: <strong>{origin.label}</strong> ({origin.lat.toFixed(4)}, {origin.lng.toFixed(4)})
-              </p>
-            </>
-          )}
-
-          {step === 2 && (
-            <>
-              <h2>2. 원하는 집 조건</h2>
-              <div className="field-grid">
-                <div className="field">
-                  <label htmlFor="dealType">거래 유형</label>
-                  <select id="dealType" value={dealType} onChange={(e) => setDealType(e.target.value)}>
-                    {DEAL_TYPE_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="field">
-                  <label htmlFor="houseType">주택 유형</label>
-                  <select id="houseType" value={houseType} onChange={(e) => setHouseType(e.target.value)}>
-                    {HOUSE_TYPE_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="field">
-                  <label htmlFor="buildAge">준공 연식</label>
-                  <select id="buildAge" value={maxBuildAge} onChange={(e) => setMaxBuildAge(e.target.value)}>
-                    {BUILD_AGE_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="field">
-                  <label htmlFor="rooms">희망 방(룸) 개수</label>
-                  <select id="rooms" value={desiredRooms} onChange={(e) => setDesiredRooms(e.target.value)}>
-                    {ROOM_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="field">
-                  <label htmlFor="bathrooms">희망 화장실 개수</label>
-                  <select id="bathrooms" value={desiredBathrooms} onChange={(e) => setDesiredBathrooms(e.target.value)}>
-                    {BATHROOM_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="field" style={{ marginTop: 18 }}>
-                <div className="range-slider-header">
-                  <span>{budgetLabelFor(dealType)}</span>
-                  <strong>{rangeDisplayLabel(budgetMin, budgetMax, BUDGET_FLOOR, BUDGET_CEIL, "억")}</strong>
-                </div>
-                <RangeSlider
-                  floor={BUDGET_FLOOR}
-                  ceil={BUDGET_CEIL}
-                  step={BUDGET_STEP}
-                  minValue={budgetMin}
-                  maxValue={budgetMax}
-                  onChange={(min, max) => {
-                    setBudgetMin(min);
-                    setBudgetMax(max);
-                  }}
-                  ticks={BUDGET_TICKS}
-                  ariaLabel="목표 예산"
-                />
-              </div>
-              <div className="field" style={{ marginTop: 22 }}>
-                <div className="range-slider-header">
-                  <span>원하는 평형</span>
-                  <strong>{rangeDisplayLabel(pyeongMin, pyeongMax, PYEONG_FLOOR, PYEONG_CEIL, "평")}</strong>
-                </div>
-                <RangeSlider
-                  floor={PYEONG_FLOOR}
-                  ceil={PYEONG_CEIL}
-                  step={PYEONG_STEP}
-                  minValue={pyeongMin}
-                  maxValue={pyeongMax}
-                  onChange={(min, max) => {
-                    setPyeongMin(min);
-                    setPyeongMax(max);
-                  }}
-                  ticks={PYEONG_TICKS}
-                  ariaLabel="원하는 평형"
-                />
-              </div>
-              <p className="note" style={{ marginTop: 8 }}>
-                방/화장실 개수는 전용면적 기준 추정치로 걸러냅니다.
-              </p>
-            </>
-          )}
-
-          {step === 3 && (
-            <div className="weights">
-              <h2>3. 무엇을 가장 중요하게 볼까요?</h2>
-              {FACTORS.map((f) => (
-                <div className="weight-row" key={f.key}>
-                  <span>
-                    <span className="dot" style={{ background: f.color }} />
-                    {f.label}
-                  </span>
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    value={weights[f.key]}
-                    onChange={(e) => updateWeight(f.key, e.target.value)}
-                  />
-                  <span style={{ textAlign: "right" }}>
-                    {Math.round((weights[f.key] / weightSum) * 100)}%
-                  </span>
-                </div>
+        {searchMode === "radius" ? (
+          <div className="field">
+            <label htmlFor="radius">
+              검색 반경: <strong>{radiusKm}km</strong> 안 {inRangeCount}개 지역
+            </label>
+            <input
+              id="radius"
+              type="range"
+              min="3"
+              max="50"
+              step="1"
+              value={radiusKm}
+              onChange={(e) => setRadiusKm(Number(e.target.value))}
+            />
+          </div>
+        ) : (
+          <div className="field">
+            <label htmlFor="sido">시/도 선택</label>
+            <select id="sido" value={selectedSido} onChange={(e) => setSelectedSido(e.target.value)}>
+              {SIDO_LIST.map((s) => (
+                <option key={s} value={s}>{s}</option>
               ))}
-            </div>
-          )}
-        </div>
+            </select>
+          </div>
+        )}
 
-        <div className="wizard-nav">
-          {step > 1 && (
-            <button type="button" className="wizard-btn wizard-btn-prev" onClick={goToPrevStep}>
-              ← 이전
-            </button>
-          )}
-          {step < RANK_TOTAL_STEPS ? (
-            <button type="button" className="wizard-btn wizard-btn-next" onClick={goToNextStep}>
-              다음 →
-            </button>
-          ) : (
-            <button className="submit-btn" type="submit" disabled={loading}>
-              {submitLabel}
-            </button>
-          )}
-        </div>
+        <p className="note" style={{ marginTop: 6 }}>
+          현재 검색 중심점: <strong>{origin.label}</strong> ({origin.lat.toFixed(4)}, {origin.lng.toFixed(4)})
+        </p>
+
+        <button
+          type="button"
+          className="conditions-drawer-btn"
+          onClick={() => setConditionsDrawerOpen(true)}
+        >
+          <span className="conditions-drawer-btn-text">
+            <span className="conditions-drawer-btn-title">원하는 집 조건 · 중요도 설정</span>
+            <span className="conditions-drawer-btn-hint">
+              {budgetLabelFor(dealType)} {rangeDisplayLabel(budgetMin, budgetMax, BUDGET_FLOOR, BUDGET_CEIL, "억")} ·{" "}
+              {rangeDisplayLabel(pyeongMin, pyeongMax, PYEONG_FLOOR, PYEONG_CEIL, "평")}
+            </span>
+          </span>
+          <span className="conditions-drawer-btn-arrow" aria-hidden="true">›</span>
+        </button>
+
+        <SlideDrawer
+          open={conditionsDrawerOpen}
+          onClose={() => setConditionsDrawerOpen(false)}
+          title="원하는 집 조건 · 중요도"
+        >
+          <h3>원하는 집 조건</h3>
+          <div className="field-grid">
+            <div className="field">
+              <label htmlFor="dealType">거래 유형</label>
+              <select id="dealType" value={dealType} onChange={(e) => setDealType(e.target.value)}>
+                {DEAL_TYPE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="houseType">주택 유형</label>
+              <select id="houseType" value={houseType} onChange={(e) => setHouseType(e.target.value)}>
+                {HOUSE_TYPE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="buildAge">준공 연식</label>
+              <select id="buildAge" value={maxBuildAge} onChange={(e) => setMaxBuildAge(e.target.value)}>
+                {BUILD_AGE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="rooms">희망 방(룸) 개수</label>
+              <select id="rooms" value={desiredRooms} onChange={(e) => setDesiredRooms(e.target.value)}>
+                {ROOM_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="bathrooms">희망 화장실 개수</label>
+              <select id="bathrooms" value={desiredBathrooms} onChange={(e) => setDesiredBathrooms(e.target.value)}>
+                {BATHROOM_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="field" style={{ marginTop: 18 }}>
+            <div className="range-slider-header">
+              <span>{budgetLabelFor(dealType)}</span>
+              <strong>{rangeDisplayLabel(budgetMin, budgetMax, BUDGET_FLOOR, BUDGET_CEIL, "억")}</strong>
+            </div>
+            <RangeSlider
+              floor={BUDGET_FLOOR}
+              ceil={BUDGET_CEIL}
+              step={BUDGET_STEP}
+              minValue={budgetMin}
+              maxValue={budgetMax}
+              onChange={(min, max) => {
+                setBudgetMin(min);
+                setBudgetMax(max);
+              }}
+              ticks={BUDGET_TICKS}
+              ariaLabel="목표 예산"
+            />
+          </div>
+          <div className="field" style={{ marginTop: 22 }}>
+            <div className="range-slider-header">
+              <span>원하는 평형</span>
+              <strong>{rangeDisplayLabel(pyeongMin, pyeongMax, PYEONG_FLOOR, PYEONG_CEIL, "평")}</strong>
+            </div>
+            <RangeSlider
+              floor={PYEONG_FLOOR}
+              ceil={PYEONG_CEIL}
+              step={PYEONG_STEP}
+              minValue={pyeongMin}
+              maxValue={pyeongMax}
+              onChange={(min, max) => {
+                setPyeongMin(min);
+                setPyeongMax(max);
+              }}
+              ticks={PYEONG_TICKS}
+              ariaLabel="원하는 평형"
+            />
+          </div>
+          <p className="note" style={{ marginTop: 8 }}>
+            방/화장실 개수는 전용면적 기준 추정치로 걸러냅니다.
+          </p>
+
+          <div className="weights" style={{ marginTop: 24 }}>
+            <h3>무엇을 가장 중요하게 볼까요?</h3>
+            {FACTORS.map((f) => (
+              <div className="weight-row" key={f.key}>
+                <span>
+                  <span className="dot" style={{ background: f.color }} />
+                  {f.label}
+                </span>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={weights[f.key]}
+                  onChange={(e) => updateWeight(f.key, e.target.value)}
+                />
+                <span style={{ textAlign: "right" }}>
+                  {Math.round((weights[f.key] / weightSum) * 100)}%
+                </span>
+              </div>
+            ))}
+          </div>
+
+          <button
+            type="button"
+            className="submit-btn"
+            style={{ marginTop: 24 }}
+            onClick={() => setConditionsDrawerOpen(false)}
+          >
+            설정 완료
+          </button>
+        </SlideDrawer>
+
+        <button className="submit-btn" type="submit" disabled={loading} style={{ marginTop: 18 }}>
+          {submitLabel}
+        </button>
+
         {(launching || analyzing) && (
           <p className="note suspense-note">
             {launching
