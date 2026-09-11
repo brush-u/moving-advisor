@@ -13,6 +13,11 @@
   --series-commute: #eb6834;
   --series-school: #1baf7a;
   --series-life: #eda100;
+  /* 거래 추이 차트에서 지역이 5~6개로 늘어날 때만 쓰는 추가 계열색(dataviz 검증 팔레트
+     슬롯 5·6 — magenta/green). 기존 4개(price/commute/school/life)는 이미 슬롯 1~4와
+     정확히 같은 값이라 그대로 이어서 씁니다. */
+  --series-5: #e87ba4;
+  --series-6: #008300;
 
   --good: #0ca30c;
   --price-pop: #d6336c;
@@ -34,6 +39,8 @@
     --series-commute: #d95926;
     --series-school: #199e70;
     --series-life: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
 
     --good: #0ca30c;
     --price-pop: #ff5c93;
@@ -84,6 +91,23 @@ h1 {
   background: var(--text-primary);
   color: var(--surface-1);
   border-color: var(--text-primary);
+}
+
+/* 탭(모드)을 옮겼다가 돌아와도 조회 데이터가 유지되도록, 한 번 방문한 탭은 unmount하지 않고
+   이 클래스로 화면에서만 숨깁니다. display:none 대신 visibility:hidden을 쓰는 이유는 지도(Leaflet)
+   같은 컴포넌트가 숨겨진 동안 크기를 0으로 잘못 계산하는 것을 막기 위해서입니다 — 박스 크기는
+   그대로 유지한 채 보이지 않게, 클릭도 안 되게만 처리합니다. */
+.mode-panels {
+  position: relative;
+}
+
+.mode-panel-hidden {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .budget-reveal {
@@ -485,7 +509,8 @@ h1 {
 }
 
 .dart-outer-animate {
-  animation: dart-fly-in 480ms cubic-bezier(0.25, 0.85, 0.3, 1.25) both;
+  /* app/components/dartMarker.js의 DART_FLIGHT_MS와 값을 맞춰야 합니다(사운드/진동 타이밍 계산에 씀). */
+  animation: dart-fly-in 260ms cubic-bezier(0.25, 0.85, 0.3, 1.25) both;
 }
 
 @keyframes dart-fly-in {
@@ -522,7 +547,7 @@ h1 {
 }
 
 .dart-outer-animate .dart-ring {
-  animation: dart-ring-pulse 420ms ease-out both;
+  animation: dart-ring-pulse 240ms ease-out both;
 }
 
 @keyframes dart-ring-pulse {
@@ -795,12 +820,29 @@ h1 {
 }
 
 .drawer-header {
+  position: relative;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 20px;
+  padding: 20px 20px 16px;
   border-bottom: 1px solid var(--gridline);
+  /* 헤더를 손가락/마우스로 오른쪽으로 끌면 패널이 닫힙니다. touch-action:none을 줘야
+     모바일에서 브라우저가 이 제스처를 페이지 스크롤/뒤로가기로 가로채지 않습니다. */
+  touch-action: none;
+  cursor: grab;
+  user-select: none;
+}
+
+.drawer-drag-handle {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--gridline);
 }
 
 .drawer-header h2 {
@@ -968,12 +1010,20 @@ h1 {
 }
 
 /* ---- 매물 비교 체크박스 + 선택된 카드 강조 ---- */
+/* 예전엔 이 줄에 "네이버 부동산에서 보기" 링크(왼쪽)와 비교 체크박스(오른쪽)가
+   같이 있어서 justify-content: space-between 으로 체크박스가 오른쪽 끝에 붙어 있었습니다.
+   링크를 없애고 나니 체크박스 혼자 남으면서 flex 규칙상 왼쪽으로 붙어버렸는데(= "아래로
+   내려간 것처럼" 보이는 원인), margin-left: auto 로 다시 오른쪽 끝 원래 위치로 고정합니다. */
 .candidate-row2 {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 8px;
   margin-top: 6px;
+}
+
+.candidate-row2 .compare-check {
+  margin-left: auto;
 }
 
 .candidate-item.comparing {
@@ -996,6 +1046,140 @@ h1 {
   width: 15px;
   height: 15px;
   cursor: pointer;
+}
+
+/* ---- 지도의 매물 마커를 클릭하면 뜨는 연결선 말풍선 ---- */
+.poi-connector-tooltip {
+  background: var(--surface-1);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 3px 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(11, 11, 11, 0.18);
+  white-space: nowrap;
+}
+.poi-connector-tooltip::before {
+  border-top-color: var(--surface-1);
+}
+
+/* ---- 지도에서 매물 마커를 클릭해 이동해 온 카드 강조 + 매물 기준 주변 시설 정보 ---- */
+.candidate-item.focused {
+  border-color: var(--price-pop);
+  box-shadow: 0 0 0 2px var(--price-pop);
+}
+
+.candidate-poi-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.candidate-poi-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--page-plane);
+  border: 1px solid var(--baseline);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* ---- 지역별·월별 실거래 추이 차트 (dataviz 스킬 검증 마크 규격) ---- */
+.trend-section {
+  margin: 18px 0 24px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--gridline);
+}
+
+.trend-chart {
+  margin-top: 14px;
+}
+
+.trend-chart-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+
+.trend-chart-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.trend-gridline {
+  stroke: var(--gridline);
+  stroke-width: 1;
+}
+
+.trend-axis-label {
+  fill: var(--text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.trend-crosshair {
+  stroke: var(--baseline);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
+}
+
+.trend-tooltip {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--page-plane);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  max-width: max-content;
+}
+
+.trend-tooltip-month {
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.trend-tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+}
+
+.trend-tooltip-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.trend-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin-top: 8px;
+}
+
+.trend-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.trend-legend-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
 }
 
 /* ---- 하단 고정 매물 비교함 ---- */
@@ -1113,6 +1297,21 @@ h1 {
 }
 
 .naver-link:hover {
+  text-decoration: underline;
+}
+
+/* 아파트 이름 자체를 네이버 부동산 링크로 쓰는 곳들(매물 카드/비교표 헤더) — 기본
+   모양은 원래 이름 텍스트와 똑같이 두고, 클릭 가능하다는 것만 마우스를 올렸을 때
+   보여줍니다(사용자 요청 — "네이버 부동산에서 보기" 텍스트 링크 대신 이름 자체를 클릭). */
+.candidate-name-link,
+.naver-link-plain {
+  color: inherit;
+  text-decoration: none;
+}
+
+.candidate-name-link:hover,
+.naver-link-plain:hover {
+  color: var(--series-price);
   text-decoration: underline;
 }
 

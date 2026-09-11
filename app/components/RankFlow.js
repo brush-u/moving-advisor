@@ -1,14 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { districts as allDistricts, groupDistrictsBySido, sidoShort } from "../../lib/districts";
-import { scoreToColor, DISTRICT_MARKER_COLOR, budgetFitColor, SUBWAY_MARKER_COLOR } from "./mapColors";
+import { scoreToColor, DISTRICT_MARKER_COLOR, budgetFitColor, SUBWAY_MARKER_COLOR, POI_CATEGORY_META } from "./mapColors";
 import { haversineKm } from "../../lib/scoring";
 import { unlockDartAudio } from "./dartAudio";
 import useSubwayStations from "./useSubwayStations";
+import usePOIs from "./usePOIs";
 import RangeSlider from "./RangeSlider";
 import SlideDrawer from "./SlideDrawer";
+import MarketTrendChart from "./MarketTrendChart";
 
 const LeafletMap = dynamic(() => import("./LeafletMap"), { ssr: false });
 
@@ -39,19 +41,11 @@ const BUILD_AGE_OPTIONS = [
   { value: "20", label: "20년 이내" },
 ];
 
-const ROOM_OPTIONS = [
-  { value: "0", label: "상관없음" },
-  { value: "1", label: "1룸 이상" },
-  { value: "2", label: "2룸 이상" },
-  { value: "3", label: "3룸 이상" },
-  { value: "4", label: "4룸 이상" },
-];
-
-const BATHROOM_OPTIONS = [
-  { value: "0", label: "상관없음" },
-  { value: "1", label: "1개 이상" },
-  { value: "2", label: "2개 이상" },
-];
+// 예전엔 여기에 "희망 방(룸) 개수"/"희망 화장실 개수" 필터(ROOM_OPTIONS/BATHROOM_OPTIONS)도
+// 있었는데, 국토부 실거래가 API에는 방/화장실 개수 데이터 자체가 없어서 전용면적만 보고
+// 추정한 값으로 필터링하고 있었습니다(lib/roomEstimate.js). 사용자가 "정확하지 않으니
+// 삭제해달라"고 요청해서 이 필터는 없앴습니다 — 추정치 자체는 매물 카드에 참고 정보로만
+// 계속 보여줍니다(예: "2~3룸 · 욕실 1개(추정)").
 
 // 목표예산/평형 범위 슬라이더의 양 끝값 — app/api/recommend/route.js의 BUDGET_FLOOR 등과
 // 반드시 같은 값을 써야 합니다(손잡이가 끝에 그대로 있으면 그쪽은 "전체"로 해석됩니다).
@@ -150,6 +144,48 @@ function naverLandUrl(dong, complexName) {
   return `https://new.land.naver.com/search?query=${encodeURIComponent(q || "부동산")}`;
 }
 
+// 국토부 API는 거래연/월/일을 각 필드로 따로 주는데, lib/molit.js에서 이미 8자리
+// YYYYMMDD(일자까지 정확한 실제 거래일)로 합쳐서 넘겨줍니다 — 아주 드물게 일자 필드가 없는
+// 옛 데이터면 6자리 YYYYMM(월까지만)으로 대체됩니다. 화면에는 있는 만큼만 보여줍니다.
+function formatDealYmd(dealYmd) {
+  if (!dealYmd) return "미상";
+  const y = dealYmd.slice(0, 4);
+  const mo = dealYmd.slice(4, 6);
+  const d = dealYmd.length >= 8 ? dealYmd.slice(6, 8) : null;
+  return d ? `${y}.${mo}.${d}` : `${y}.${mo}`;
+}
+
+// 도보 환산: 부동산 정보에서 흔히 쓰는 기준(약 80m/분 ≈ 시속 4.8km)을 그대로 씁니다.
+// 실제 도로/보행로를 따라간 거리가 아니라 직선거리 기준 추정치라, 실제 도보시간은 이보다
+// 조금 더 걸릴 수 있습니다.
+const WALK_SPEED_KMH = 4.8;
+function walkMinutesFor(km) {
+  return Math.max(1, Math.round((km / WALK_SPEED_KMH) * 60));
+}
+
+// 후보 좌표에서 가장 가까운 지하철역을 찾습니다(직선거리 기준).
+function nearestStationTo(lat, lng, stations) {
+  if (!stations || stations.length === 0 || lat == null || lng == null) return null;
+  let best = null;
+  let bestKm = Infinity;
+  for (const s of stations) {
+    const km = haversineKm(lat, lng, s.lat, s.lng);
+    if (km < bestKm) {
+      bestKm = km;
+      best = s;
+    }
+  }
+  return best ? { station: best, km: bestKm } : null;
+}
+
+// nearestStationTo와 같은 로직을 지하철역이 아닌 다른 카테고리(마트/백화점/병원/약국)에도
+// 그대로 재사용하기 위한 얇은 래퍼입니다("station"이라는 이름이 지하철에 특화돼 있어
+// 헷갈리지 않도록 poi로 키만 바꿔 돌려줍니다).
+function nearestPoiTo(lat, lng, list) {
+  const found = nearestStationTo(lat, lng, list);
+  return found ? { poi: found.station, km: found.km } : null;
+}
+
 export default function RankFlow() {
   const [origin, setOrigin] = useState(DEFAULT_ORIGIN);
   const [userLocation, setUserLocation] = useState(null);
@@ -173,8 +209,6 @@ export default function RankFlow() {
   const [houseType, setHouseType] = useState("apt");
   const [dealType, setDealType] = useState("trade");
   const [maxBuildAge, setMaxBuildAge] = useState("0");
-  const [desiredRooms, setDesiredRooms] = useState("0");
-  const [desiredBathrooms, setDesiredBathrooms] = useState("0");
   const [weights, setWeights] = useState({ price: 30, commute: 30, school: 20, life: 20 });
 
   const [loading, setLoading] = useState(false);
@@ -183,6 +217,10 @@ export default function RankFlow() {
   const [error, setError] = useState(null);
   const [data, setData] = useState(null);
   const [selectedDistrict, setSelectedDistrict] = useState(null);
+  // 지도의 매물(집) 마커를 클릭했을 때, 어느 매물을 클릭했는지 기억해 뒀다가 (1) 그 매물
+  // 카드로 스크롤 이동시키고 (2) 지도에 그 매물 기준 가까운 시설까지 연결선을 그리는 데
+  // 씁니다. 마커 id 형식 그대로("lawdCd::cand::idx") 저장합니다.
+  const [focusedCandidateKey, setFocusedCandidateKey] = useState(null);
   // 서로 다른 지역의 매물이라도 최대 2개까지 골라 나란히 비교할 수 있게 하는 선택 목록.
   const [compareItems, setCompareItems] = useState([]);
 
@@ -197,6 +235,10 @@ export default function RankFlow() {
 
   function removeCompare(key) {
     setCompareItems((prev) => prev.filter((p) => p.key !== key));
+  }
+
+  function clearCompare() {
+    setCompareItems([]);
   }
 
   // 기본조건: 페이지가 열리면 우선 내 위치를 조용히 확인해 지도에 표시해 봅니다(권한 거부/실패
@@ -306,6 +348,13 @@ export default function RankFlow() {
     // AudioContext를 만들어 둬야 아래 다트 착지음을 재생할 수 있습니다.
     unlockDartAudio();
     setError(null);
+    // 버튼을 누른 즉시 이전 조회 결과를 지웁니다(사용자 요청) — 예전엔 새 결과가 도착할
+    // 때까지 이전 검색 결과(지역 카드, 지도 핀)가 화면에 그대로 남아있어서, 지금 로딩 중인
+    // 화면이 이전 결과인지 헷갈릴 수 있었습니다.
+    setData(null);
+    setSelectedDistrict(null);
+    setFocusedCandidateKey(null);
+    setCompareItems([]);
     setLoading(true);
     setLaunching(true);
     setPickerZoom((z) => Math.max(z, 13));
@@ -331,8 +380,6 @@ export default function RankFlow() {
           houseType,
           dealType,
           maxBuildAge,
-          desiredRooms,
-          desiredBathrooms,
         }),
       }).then(async (res) => {
         const json = await res.json();
@@ -349,6 +396,7 @@ export default function RankFlow() {
       const [json] = await Promise.all([fetchPromise, new Promise((r) => setTimeout(r, MIN_SUSPENSE_MS))]);
       setData(json);
       setSelectedDistrict(null);
+      setFocusedCandidateKey(null);
       setCompareItems([]); // 새 검색 결과가 오면 이전 비교 선택은 비웁니다(다른 매물 목록이라 의미가 없어짐)
     } catch (err) {
       setError(err.message);
@@ -362,12 +410,29 @@ export default function RankFlow() {
   const weightSum = weights.price + weights.commute + weights.school + weights.life || 1;
 
   function handleMarkerClick(id) {
-    // 지역 중심 마커의 id는 lawdCd 그대로지만, 매물 후보/지하철역 마커는 "lawdCd::cand::0",
-    // "subway::123" 처럼 접두어를 붙여 구분합니다 — 어느 쪽을 클릭해도 해당 지역 카드로
-    // 이동하게 앞부분만 lawdCd로 취급합니다(지하철역처럼 지역과 무관한 마커는 일치하는
-    // 카드가 없어 조용히 아무 일도 일어나지 않습니다).
-    const lawdCd = String(id).split("::")[0];
+    // 지역 중심 마커의 id는 lawdCd 그대로지만, 매물 후보/지하철역/마트/백화점/병원/약국
+    // 마커는 "lawdCd::cand::0", "subway::123", "mart::456" 처럼 접두어를 붙여 구분합니다.
+    const idStr = String(id);
+    const lawdCd = idStr.split("::")[0];
     setSelectedDistrict(lawdCd);
+
+    // 매물(집) 마커를 클릭한 경우: 지역 카드가 아니라 그 매물 카드로 바로 이동시키고(사용자
+    // 요청 5번), focusedCandidateKey를 기억해 지도에 그 매물 기준 가까운 시설까지 연결선을
+    // 그립니다(사용자 요청 4번). 조건입력 위치처럼 매물이 아닌 마커(지역/지하철역 등)를
+    // 클릭했을 때는 연결선을 지웁니다.
+    const candMatch = idStr.match(/^(.+)::cand::(\d+)$/);
+    if (candMatch) {
+      setFocusedCandidateKey(idStr);
+      const idx = candMatch[2];
+      const cardEl = document.getElementById(`candidate-${lawdCd}-${idx}`);
+      if (cardEl) {
+        cardEl.scrollIntoView({ behavior: "smooth", block: "center" });
+        return;
+      }
+    } else {
+      setFocusedCandidateKey(null);
+    }
+
     const el = document.getElementById(`district-card-${lawdCd}`);
     if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
   }
@@ -549,22 +614,6 @@ export default function RankFlow() {
                 ))}
               </select>
             </div>
-            <div className="field">
-              <label htmlFor="rooms">희망 방(룸) 개수</label>
-              <select id="rooms" value={desiredRooms} onChange={(e) => setDesiredRooms(e.target.value)}>
-                {ROOM_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
-                ))}
-              </select>
-            </div>
-            <div className="field">
-              <label htmlFor="bathrooms">희망 화장실 개수</label>
-              <select id="bathrooms" value={desiredBathrooms} onChange={(e) => setDesiredBathrooms(e.target.value)}>
-                {BATHROOM_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
-                ))}
-              </select>
-            </div>
           </div>
 
           <div className="field" style={{ marginTop: 18 }}>
@@ -660,13 +709,14 @@ export default function RankFlow() {
         <Results
           data={data}
           selectedDistrict={selectedDistrict}
+          focusedCandidateKey={focusedCandidateKey}
           onMarkerClick={handleMarkerClick}
           compareItems={compareItems}
           onToggleCompare={toggleCompare}
         />
       )}
 
-      <CompareTray items={compareItems} onRemove={removeCompare} />
+      <CompareTray items={compareItems} onRemove={removeCompare} onClear={clearCompare} />
 
       <p className="footer-note">
         예산 점수는 입력한 예산과 지역 예상 시세(평당가 × 평형)의 적합도를 계산한 값이고,
@@ -692,7 +742,7 @@ function zoomForSpreadKm(km) {
   return 7;
 }
 
-function Results({ data, selectedDistrict, onMarkerClick, compareItems, onToggleCompare }) {
+function Results({ data, selectedDistrict, focusedCandidateKey, onMarkerClick, compareItems, onToggleCompare }) {
   // 시/도 전체를 대상으로 검색하면 지역이 30개 넘게 나올 수도 있는데, 처음엔 상위 10개만
   // 카드로 보여주고 "더보기"로 펼칩니다(평택/안성처럼 순위가 밀린 지역도 이렇게 볼 수
   // 있습니다). RANK_INITIAL_VISIBLE/RANK_PAGE_SIZE 주석 참고.
@@ -726,6 +776,13 @@ function Results({ data, selectedDistrict, onMarkerClick, compareItems, onToggle
     ? Math.max(...districtMarkers.map((m) => haversineKm(m.lat, m.lng, mapCenter.lat, mapCenter.lng))) + 5
     : 10;
 
+  // 지하철역/대형마트/백화점/병원/약국을 candidateMarkers보다 먼저 구해 둬서(아래로 옮기지
+  // 않고 순서만 위로), 매물 후보 마커의 팝업/연결선에 "가장 가까운 시설까지 도보 시간"을
+  // 함께 넣을 수 있게 합니다(사용자 요청 3·4·5번 — 예전엔 지하철역만 useSubwayStations로
+  // 따로 조회했는데, 5개 카테고리를 한 번에 묶어 조회하는 usePOIs로 대체했습니다).
+  const pois = usePOIs(mapCenter.lat, mapCenter.lng, Math.min(spreadKm, 25));
+  const subwayStations = pois.subway;
+
   // 추천 결과(data)가 새로 나올 때마다: (1) 지도를 결과 중심으로 부드럽게 포커싱하고,
   // (2) 상위 지역들의 실제 매물 후보 좌표를 별도로 조회해서 다 도착하는 대로 지도에 "파팍"
   // 꽂히는 연출과 함께 표시합니다. 좌표 조회를 추천 결과 자체와 분리한 이유는
@@ -733,14 +790,9 @@ function Results({ data, selectedDistrict, onMarkerClick, compareItems, onToggle
   const [candidateCoords, setCandidateCoords] = useState({});
   const [focusNonce, setFocusNonce] = useState(0);
   const [dropNonce, setDropNonce] = useState(0);
-  // 가장 최근에 좌표가 도착한 지역(=아직 낙하 애니메이션을 재생해야 하는 지역). 그 외 지역은
-  // "이미 꽂혀 있는" 상태로 취급해 새 지역이 도착할 때마다 다시 떨어지는 것처럼 보이지 않게 합니다.
-  const [landingLawdCd, setLandingLawdCd] = useState(null);
 
   useEffect(() => {
     setFocusNonce((n) => n + 1);
-    setCandidateCoords({});
-    setLandingLawdCd(null);
 
     const payload = visibleResults
       .map((r) => {
@@ -755,12 +807,28 @@ function Results({ data, selectedDistrict, onMarkerClick, compareItems, onToggle
       })
       .filter(Boolean);
 
-    if (payload.length === 0) return;
+    if (payload.length === 0) {
+      setCandidateCoords({});
+      return;
+    }
+
+    // 예전엔 지역별로 실제 좌표(Nominatim 지오코딩)가 도착하는 대로 그 지역 다트만 그때그때
+    // "파팍" 떨어지는 연출을 재생했는데, 지오코딩 자체가 초당 1건 제한이라 지역이 여러 개면
+    // 뒤쪽 지역은 몇 초씩 늦게, 순서대로 떨어지는 것처럼 보였습니다. 사용자가 "따로따로 말고
+    // 한꺼번에 빠르게 찍어달라"고 요청해서, 이제는 모든 지역의 다트를 일단 그 지역 중심
+    // 좌표(임시 위치)로 채워서 네트워크 대기 없이 즉시 한 번에 떨어뜨립니다. 그 뒤 실제
+    // 지오코딩 결과가 지역별로 하나씩 도착하면 이미 꽂혀 있는 다트의 위치만 조용히(애니메이션
+    // 없이) 정확한 좌표로 다듬습니다 — dropNonce를 그때는 다시 올리지 않아서 낙하 연출이
+    // 재생되지 않습니다(아래 candidateMarkers의 landing:true만 유지, settled 개념은 이제
+    // dropNonce 하나로 충분해 없앴습니다 — LeafletMap.js의 isFreshDrop 참고).
+    const placeholderCoords = {};
+    payload.forEach((d) => {
+      placeholderCoords[d.lawdCd] = d.candidates.map((c) => ({ idx: c.idx, lat: d.lat, lng: d.lng, geocoded: false }));
+    });
+    setCandidateCoords(placeholderCoords);
+    setDropNonce((n) => n + 1);
 
     let cancelled = false;
-    // 지역이 끝나는 대로 한 줄씩(NDJSON) 흘러오는 응답을 그때그때 반영합니다 — 전부 끝날 때까지
-    // 기다렸다가 한 번에 표시하면 그 사이 화면이 멈춰 보이고, 다 도착했을 때 수십 개 핀이 한꺼번에
-    // 긴 순서로 떨어지는 애니메이션까지 재생돼 훨씬 느리게 느껴집니다.
     (async () => {
       try {
         const res = await fetch("/api/candidate-coords", {
@@ -771,7 +839,7 @@ function Results({ data, selectedDistrict, onMarkerClick, compareItems, onToggle
         if (!res.body) {
           const json = await res.json().catch(() => null);
           if (!cancelled && json?.coordsByDistrict) {
-            setCandidateCoords(json.coordsByDistrict);
+            setCandidateCoords((prev) => ({ ...prev, ...json.coordsByDistrict }));
           }
           return;
         }
@@ -789,13 +857,13 @@ function Results({ data, selectedDistrict, onMarkerClick, compareItems, onToggle
             if (!line.trim()) continue;
             const parsed = JSON.parse(line);
             if (!parsed?.lawdCd) continue;
+            // 이미 임시 위치로 꽂혀 있는 다트의 좌표만 조용히 갱신합니다(dropNonce는 위에서
+            // 이미 한 번 올렸으므로 여기서는 낙하 애니메이션이 다시 재생되지 않습니다).
             setCandidateCoords((prev) => ({ ...prev, [parsed.lawdCd]: parsed.coords }));
-            setLandingLawdCd(parsed.lawdCd); // 이 지역만 이번 낙하 애니메이션 대상
-            setDropNonce((n) => n + 1);
           }
         }
       } catch (err) {
-        // 조회 실패해도 이미 도착한 지역의 핀은 그대로 남아 있고, 순위/매물 목록 등 핵심
+        // 조회 실패해도 이미 꽂힌 임시 위치의 다트는 그대로 남아 있고, 순위/매물 목록 등 핵심
         // 기능에는 영향이 없습니다(지도 핀은 어디까지나 곁들이는 정보).
       }
     })();
@@ -818,6 +886,10 @@ function Results({ data, selectedDistrict, onMarkerClick, compareItems, onToggle
           cand.dealType === "wolse"
             ? `보증금 ${cand.totalEok}억 · 월세 ${cand.monthlyRentManwon?.toLocaleString?.() ?? cand.monthlyRentManwon}만원`
             : `${cand.totalEok}억원`;
+        // 이 매물 좌표에서 가장 가까운 지하철역까지 도보 거리/시간을 계산해 팝업에 함께
+        // 보여줍니다(사용자 요청). 좌표가 아직 임시 위치(지역 중심, geocoded:false)인
+        // 동안에는 실제 위치가 아니라서 부정확할 수 있으니 표시하지 않습니다.
+        const near = c.geocoded ? nearestStationTo(c.lat, c.lng, subwayStations) : null;
         return {
           id: `${r.lawdCd}::cand::${c.idx}`,
           lat: c.lat,
@@ -825,25 +897,155 @@ function Results({ data, selectedDistrict, onMarkerClick, compareItems, onToggle
           color: budgetFitColor(cand.withinBudget),
           approximate: !c.geocoded,
           landing: true,
-          settled: r.lawdCd !== landingLawdCd,
           popupHtml: `<strong>${cand.complexName}</strong><br/>${r.sido} ${r.name} ${cand.dong}<br/>${priceLine}${
-            !c.geocoded ? "<br/><em>(정확한 위치 아님)</em>" : ""
-          }`,
+            near
+              ? `<br/>🚇 ${near.station.name}역까지 도보 약 ${walkMinutesFor(near.km)}분(약 ${Math.round(near.km * 1000)}m, 직선거리 기준)`
+              : ""
+          }${!c.geocoded ? "<br/><em>(정확한 위치 아님)</em>" : ""}`,
         };
       });
   });
 
-  const subwayStations = useSubwayStations(mapCenter.lat, mapCenter.lng, Math.min(spreadKm, 25));
-  const subwayMarkers = subwayStations.map((s) => ({
-    id: `subway::${s.id}`,
-    lat: s.lat,
-    lng: s.lng,
-    color: SUBWAY_MARKER_COLOR,
-    size: 8,
-    popupHtml: `<strong>${s.name}</strong><br/>지하철역`,
+  // 지하철역/대형마트/백화점/병원/약국을 같은 방식(작은 원 마커 + 카테고리별 색+이모지)으로
+  // 지도에 표시합니다(사용자 요청 3번). subwayMarkers는 기존 이름을 그대로 유지해 위
+  // candidateMarkers 계산과의 연결(변수 순서)을 건드리지 않습니다.
+  const poiMarkersFor = (category) =>
+    (pois[category] || []).map((p) => ({
+      id: `${category}::${p.id}`,
+      lat: p.lat,
+      lng: p.lng,
+      color: POI_CATEGORY_META[category].color,
+      glyph: POI_CATEGORY_META[category].glyph,
+      size: 16,
+      popupHtml: `<strong>${p.name}</strong><br/>${POI_CATEGORY_META[category].label}`,
+    }));
+  const subwayMarkers = poiMarkersFor("subway");
+  const martMarkers = poiMarkersFor("mart");
+  const departmentMarkers = poiMarkersFor("department");
+  const hospitalMarkers = poiMarkersFor("hospital");
+  const pharmacyMarkers = poiMarkersFor("pharmacy");
+
+  // 지도의 매물(집) 마커를 클릭했을 때(handleMarkerClick이 focusedCandidateKey를 채움),
+  // 그 매물의 실제 좌표에서 카테고리별로 가장 가까운 시설까지 잇는 연결선 + 말풍선을
+  // 준비합니다(사용자 요청 4번). 아직 임시 좌표(지역 중심, geocoded:false)인 매물은 실제
+  // 위치가 아니라서 연결선이 오해를 줄 수 있으므로 만들지 않습니다.
+  const focusedMatch = focusedCandidateKey ? String(focusedCandidateKey).match(/^(.+)::cand::(\d+)$/) : null;
+  let focusedConnectors = [];
+  if (focusedMatch) {
+    const [, focusedLawdCd, focusedIdxStr] = focusedMatch;
+    const focusedIdx = Number(focusedIdxStr);
+    const coordEntry = candidateCoords[focusedLawdCd]?.find((c) => c.idx === focusedIdx);
+    if (coordEntry?.geocoded && coordEntry.lat != null && coordEntry.lng != null) {
+      focusedConnectors = ["subway", "mart", "department", "hospital", "pharmacy"]
+        .map((category) => {
+          const near = nearestPoiTo(coordEntry.lat, coordEntry.lng, pois[category]);
+          if (!near) return null;
+          const meta = POI_CATEGORY_META[category];
+          return {
+            id: `connector::${category}`,
+            points: [
+              [coordEntry.lat, coordEntry.lng],
+              [near.poi.lat, near.poi.lng],
+            ],
+            color: meta.color,
+            tooltip: `${meta.glyph} ${near.poi.name} · 도보 약 ${walkMinutesFor(near.km)}분(${Math.round(near.km * 1000)}m)`,
+          };
+        })
+        .filter(Boolean);
+    }
+  }
+
+  // 매물 카드 상세에도 "이 집 기준" 가까운 시설 정보를 보여주기 위한 준비(사용자 요청 5번).
+  // 지역별로, 실제 좌표가 확인된(geocoded) 매물만 idx로 계산해 둡니다 — 지도에 마커가 찍힌
+  // 매물(상위 CANDIDATE_MARKER_LIMIT_PER_DISTRICT건)과 정확히 같은 기준입니다.
+  const poiInfoByDistrict = {};
+  visibleResults.forEach((r) => {
+    const coordsList = candidateCoords[r.lawdCd];
+    if (!coordsList) return;
+    const info = {};
+    coordsList.forEach((c) => {
+      if (!c.geocoded || c.lat == null || c.lng == null) return;
+      info[c.idx] = {
+        subway: nearestPoiTo(c.lat, c.lng, pois.subway),
+        mart: nearestPoiTo(c.lat, c.lng, pois.mart),
+        department: nearestPoiTo(c.lat, c.lng, pois.department),
+        hospital: nearestPoiTo(c.lat, c.lng, pois.hospital),
+        pharmacy: nearestPoiTo(c.lat, c.lng, pois.pharmacy),
+      };
+    });
+    poiInfoByDistrict[r.lawdCd] = info;
+  });
+
+  // 6번 요청: "조회하는 그날까지의 부동산 거래 추이"를 지역별·월별로 비교할 수 있는 차트용
+  // 데이터. API 키가 없으면(liveEnabled=false) 애초에 국토부 원자료 자체를 조회할 수 없어
+  // 조용히 건너뜁니다 — 이 섹션은 곁들이는 정보라 없어도 추천 결과 자체에는 영향이 없습니다.
+  // 상위 MAX_TREND_DISTRICTS(6)개 지역만 대상으로 합니다(README lib/marketTrend.js 참고).
+  const [trends, setTrends] = useState({});
+  useEffect(() => {
+    if (!data.meta.liveEnabled) {
+      setTrends({});
+      return;
+    }
+    const lawdCds = visibleResults.slice(0, 6).map((r) => r.lawdCd);
+    if (lawdCds.length === 0) {
+      setTrends({});
+      return;
+    }
+    let cancelled = false;
+    fetch("/api/market-trend", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lawdCds, houseType: data.meta.houseType, dealType: data.meta.dealType }),
+    })
+      .then((res) => res.json())
+      .then((json) => {
+        if (!cancelled) setTrends(json.trends || {});
+      })
+      .catch(() => {
+        if (!cancelled) setTrends({});
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
+
+  const TREND_COLORS = [
+    "var(--series-price)",
+    "var(--series-commute)",
+    "var(--series-school)",
+    "var(--series-life)",
+    "var(--series-5)",
+    "var(--series-6)",
+  ];
+  const trendEntries = Object.entries(trends).filter(([, arr]) => arr && arr.length > 0);
+  const trendMonths = trendEntries[0]?.[1]?.map((p) => p.ym) || [];
+  const trendLabelFor = (lawdCd) => {
+    const d = allDistricts.find((x) => x.lawdCd === lawdCd);
+    return d ? `${sidoShort(d.sido)} ${d.name}` : lawdCd;
+  };
+  const trendSeriesCount = trendEntries.map(([lawdCd, arr], i) => ({
+    key: lawdCd,
+    label: trendLabelFor(lawdCd),
+    color: TREND_COLORS[i % TREND_COLORS.length],
+    points: arr.map((p) => p.count),
+  }));
+  const trendSeriesPrice = trendEntries.map(([lawdCd, arr], i) => ({
+    key: lawdCd,
+    label: trendLabelFor(lawdCd),
+    color: TREND_COLORS[i % TREND_COLORS.length],
+    points: arr.map((p) => p.avgEok),
   }));
 
-  const markers = [...districtMarkers, ...candidateMarkers, ...subwayMarkers];
+  const markers = [
+    ...districtMarkers,
+    ...candidateMarkers,
+    ...subwayMarkers,
+    ...martMarkers,
+    ...departmentMarkers,
+    ...hospitalMarkers,
+    ...pharmacyMarkers,
+  ];
 
   return (
     <div className="panel">
@@ -859,21 +1061,25 @@ function Results({ data, selectedDistrict, onMarkerClick, compareItems, onToggle
           {data.meta.searchMode === "sido"
             ? `${data.meta.sido} 안 ${data.meta.districtPoolSize}개 지역`
             : `반경 ${data.meta.radiusKm}km 안 ${data.meta.districtPoolSize}개 지역`}{" "}
-          비교 결과입니다. 점이 진할수록 고득점 지역, 초록/주황은 매물 후보, 보라색은
-          지하철역입니다. LH 공공임대 단지·청약홈 분양 공고 등 공공주택 정보는 상단
-          "③ 공공주택 정보" 탭에서 시/도 단위로 확인할 수 있습니다.
+          비교 결과입니다. 점이 진할수록 고득점 지역, 초록/주황은 매물 후보입니다. 지도 위
+          작은 원 마커는 보라 🚇 지하철역, 갈색 🛒 대형마트, 자주 🏬 백화점, 빨강 🏥 병원,
+          청록 💊 약국이며, 매물(집) 마커를 클릭하면 그 매물에서 가장 가까운 시설까지 선으로
+          이어 도보 시간을 보여주고 해당 매물 카드로 바로 이동합니다. LH 공공임대 단지·청약홈
+          분양 공고 등 공공주택 정보는 상단 "③ 공공주택 정보" 탭에서 시/도 단위로 확인할 수
+          있습니다.
         </p>
       )}
       <LeafletMap
         center={mapCenter}
         zoom={7}
         markers={markers}
-        selectedId={selectedDistrict}
+        selectedId={focusedCandidateKey || selectedDistrict}
         onMarkerClick={onMarkerClick}
         height={360}
         focus={{ lat: mapCenter.lat, lng: mapCenter.lng, zoom: zoomForSpreadKm(spreadKm) }}
         focusKey={focusNonce}
         dropKey={dropNonce}
+        connectors={focusedConnectors}
       />
 
       {!data.meta.liveEnabled && (
@@ -894,6 +1100,31 @@ function Results({ data, selectedDistrict, onMarkerClick, compareItems, onToggle
         </div>
       )}
 
+      {trendEntries.length > 0 && (
+        <div className="trend-section">
+          <h3>지역별·월별 실거래 추이 (최근 6개월)</h3>
+          <p className="note">
+            조회 시점 기준 국토부 실거래가 원자료를 지역별로 월별 집계한 값입니다. 거래
+            건수로 어느 지역이 활발히 거래되는지, 평균 거래금액으로 가격이 오르는지 내리는지
+            함께 볼 수 있습니다(예산 범위 등 조건과 무관하게 그 지역 전체의 실거래 기준입니다).
+          </p>
+          <MarketTrendChart
+            title="월별 거래 건수"
+            unit="건"
+            months={trendMonths}
+            series={trendSeriesCount}
+            valueFormatter={(v) => (v == null ? "-" : v.toLocaleString())}
+          />
+          <MarketTrendChart
+            title="월별 평균 거래금액"
+            unit="억원"
+            months={trendMonths}
+            series={trendSeriesPrice}
+            valueFormatter={(v) => (v == null ? "거래 없음" : v.toFixed(2))}
+          />
+        </div>
+      )}
+
       {visibleResults.map((r) => (
         <ResultCard
           key={r.lawdCd}
@@ -904,6 +1135,8 @@ function Results({ data, selectedDistrict, onMarkerClick, compareItems, onToggle
           compareItems={compareItems}
           onToggleCompare={onToggleCompare}
           isSelected={selectedDistrict === r.lawdCd}
+          poiInfo={poiInfoByDistrict[r.lawdCd]}
+          focusedCandidateKey={focusedCandidateKey}
         />
       ))}
 
@@ -929,6 +1162,8 @@ function ResultCard({
   compareItems,
   onToggleCompare,
   isSelected,
+  poiInfo,
+  focusedCandidateKey,
 }) {
   // 예산/통근/학군/치안 막대그래프와 순위·총점 배지, 그리고 예상 시세·예상 총액을 뺀 나머지
   // 세부 참고지수(예상 통근시간, 학군/치안·편의 참고지수)는 사용자가 "의미 없다"며 지워달라고
@@ -992,6 +1227,8 @@ function ResultCard({
           dealType={dealType}
           compareItems={compareItems}
           onToggleCompare={onToggleCompare}
+          poiInfo={poiInfo}
+          focusedCandidateKey={focusedCandidateKey}
         />
       )}
     </div>
@@ -1001,7 +1238,16 @@ function ResultCard({
 const CANDIDATE_INITIAL_VISIBLE = 4; // 처음엔 이만큼만 보여줌
 const CANDIDATE_PAGE_SIZE = 8; // "더보기"를 누를 때마다 이만큼씩 추가로 펼침
 
-function CandidateList({ candidates, houseTypeLabel, districtName, lawdCd, compareItems, onToggleCompare }) {
+function CandidateList({
+  candidates,
+  houseTypeLabel,
+  districtName,
+  lawdCd,
+  compareItems,
+  onToggleCompare,
+  poiInfo,
+  focusedCandidateKey,
+}) {
   const [visibleCount, setVisibleCount] = useState(CANDIDATE_INITIAL_VISIBLE);
   const visibleCandidates = candidates.slice(0, visibleCount);
   const hiddenCount = candidates.length - visibleCandidates.length;
@@ -1024,10 +1270,39 @@ function CandidateList({ candidates, houseTypeLabel, districtName, lawdCd, compa
             const isWolse = c.dealType === "wolse";
             const key = `${lawdCd}-${idx}`;
             const isComparing = compareItems?.some((p) => p.key === key);
+            // 지도에서 이 매물 마커를 클릭해 이동해 왔는지(사용자 요청 5번 — 마커 id 형식이
+            // handleMarkerClick과 candidateMarkers 양쪽에서 동일하게 "lawdCd::cand::idx"라
+            // 그대로 비교할 수 있습니다).
+            const isFocused = focusedCandidateKey === `${lawdCd}::cand::${idx}`;
+            const poiNear = poiInfo?.[idx];
+            const poiChips = poiNear
+              ? ["subway", "mart", "department", "hospital", "pharmacy"]
+                  .map((category) => {
+                    const near = poiNear[category];
+                    if (!near) return null;
+                    const meta = POI_CATEGORY_META[category];
+                    return { category, meta, near };
+                  })
+                  .filter(Boolean)
+              : [];
             return (
-              <div className={`candidate-item${isComparing ? " comparing" : ""}`} key={`${c.complexName}-${idx}`}>
+              <div
+                className={`candidate-item${isComparing ? " comparing" : ""}${isFocused ? " focused" : ""}`}
+                id={`candidate-${lawdCd}-${idx}`}
+                key={`${c.complexName}-${idx}`}
+              >
                 <div className="candidate-row1">
-                  <span className="candidate-name">{c.complexName}</span>
+                  {/* 예전엔 아파트 이름 아래에 "네이버 부동산에서 보기 ↗" 링크를 따로 뒀는데,
+                      사용자 요청으로 그 텍스트 링크는 없애고 아파트 이름 자체를 클릭하면
+                      네이버 부동산 검색으로 연결되도록 바꿨습니다. */}
+                  <a
+                    className="candidate-name candidate-name-link"
+                    href={naverLandUrl(c.dong, c.complexName)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {c.complexName}
+                  </a>
                   <span className="candidate-price">
                     <span className="candidate-price-value">
                       {isWolse ? `보증금 ${c.totalEok}억 · 월세 ${c.monthlyRentManwon?.toLocaleString?.() ?? c.monthlyRentManwon}만원` : `${c.totalEok}억원`}
@@ -1046,9 +1321,7 @@ function CandidateList({ candidates, houseTypeLabel, districtName, lawdCd, compa
                     삭제 대신 이렇게 구분 표시로 해결했습니다(README 27번). */}
                 <div className="candidate-distinguish">
                   <span className="candidate-chip">{c.floor ? `${c.floor}층` : "층 미상"}</span>
-                  <span className="candidate-chip">
-                    거래 {c.dealYmd ? `${c.dealYmd.slice(0, 4)}.${c.dealYmd.slice(4, 6)}` : "미상"}
-                  </span>
+                  <span className="candidate-chip">거래 {formatDealYmd(c.dealYmd)}</span>
                 </div>
                 <div className="candidate-meta">
                   {c.dong} · {c.pyeong}평({c.areaM2}㎡) · {c.buildYear ? `${c.buildYear}년 준공(${c.age}년차)` : "준공연도 미상"}
@@ -1056,15 +1329,20 @@ function CandidateList({ candidates, houseTypeLabel, districtName, lawdCd, compa
                 <div className="candidate-meta">
                   {c.layout.label}
                 </div>
+                {/* 이 매물의 실제 좌표(지오코딩 완료분만) 기준으로 가장 가까운 지하철역/
+                    대형마트/백화점/병원/약국까지 도보 시간을 보여줍니다(사용자 요청 5번 —
+                    "카드 상세에도 표시하는데 집 기준이 되어야 한다"). 지도 마커를 클릭하면
+                    뜨는 연결선(사용자 요청 4번)과 정확히 같은 계산 결과입니다. */}
+                {poiChips.length > 0 && (
+                  <div className="candidate-poi-line">
+                    {poiChips.map(({ category, meta, near }) => (
+                      <span className="candidate-poi-chip" key={category}>
+                        {meta.glyph} {near.poi.name} 도보 {walkMinutesFor(near.km)}분
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <div className="candidate-row2">
-                  <a
-                    className="naver-link"
-                    href={naverLandUrl(c.dong, c.complexName)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    네이버 부동산에서 보기 ↗
-                  </a>
                   {onToggleCompare && (
                     <label className="compare-check">
                       <input
@@ -1171,18 +1449,10 @@ function CompareTable({ items }) {
     },
     { label: "층", render: (it) => (it.floor ? `${it.floor}층` : "미상") },
     { label: "방/화장실 구성(추정)", render: (it) => it.layout?.label || "-" },
-    { label: "거래월", render: (it) => (it.dealYmd ? `${it.dealYmd.slice(0, 4)}.${it.dealYmd.slice(4, 6)}` : "-") },
+    { label: "거래일", render: (it) => formatDealYmd(it.dealYmd) },
     {
       label: "예산 이내",
       render: (it) => (it.withinBudget === true ? "이내" : it.withinBudget === false ? "초과" : "-"),
-    },
-    {
-      label: "네이버 부동산",
-      render: (it) => (
-        <a className="naver-link" href={naverLandUrl(it.dong, it.complexName)} target="_blank" rel="noopener noreferrer">
-          검색해서 보기 ↗
-        </a>
-      ),
     },
   ];
 
@@ -1192,8 +1462,19 @@ function CompareTable({ items }) {
         <thead>
           <tr>
             <th></th>
-            <th>{a.complexName}</th>
-            <th>{b.complexName}</th>
+            {/* 예전엔 표 아래에 "네이버 부동산" 행을 따로 두고 링크를 넣었는데, 사용자 요청으로
+                그 행은 없애고 대신 여기 아파트 이름(헤더) 자체를 클릭하면 네이버 부동산 검색으로
+                연결되도록 바꿨습니다. */}
+            <th>
+              <a className="naver-link-plain" href={naverLandUrl(a.dong, a.complexName)} target="_blank" rel="noopener noreferrer">
+                {a.complexName}
+              </a>
+            </th>
+            <th>
+              <a className="naver-link-plain" href={naverLandUrl(b.dong, b.complexName)} target="_blank" rel="noopener noreferrer">
+                {b.complexName}
+              </a>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -1214,10 +1495,29 @@ function CompareTable({ items }) {
   );
 }
 
-function CompareTray({ items, onRemove }) {
-  if (!items || items.length === 0) return null;
+// 매물 비교 트레이는 화면 하단에 떠 있는 sticky 영역이라(모달/오버레이가 아니라 배경도 그대로
+// 조작 가능), "바깥을 클릭하면 닫힌다"를 만들려면 배경 클릭을 가로챌 백드롭이 없어서 document
+// 전체에 pointerdown 리스너를 달아 트레이 바깥을 클릭했는지 직접 판단합니다. 단, 매물 카드의
+// "비교하기" 체크박스(.compare-check)는 트레이 DOM 바깥에 있지만 이걸 눌러서 두 번째 매물을
+// 담는 것까지 "바깥 클릭"으로 오인해 트레이를 닫아버리면 안 되므로 별도로 제외합니다.
+function CompareTray({ items, onRemove, onClear }) {
+  const trayRef = useRef(null);
+  const hasItems = items && items.length > 0;
+
+  useEffect(() => {
+    if (!hasItems) return;
+    function handlePointerDown(e) {
+      if (trayRef.current && trayRef.current.contains(e.target)) return;
+      if (e.target.closest && e.target.closest(".compare-check")) return;
+      onClear?.();
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [hasItems, onClear]);
+
+  if (!hasItems) return null;
   return (
-    <div className="compare-tray">
+    <div className="compare-tray" ref={trayRef}>
       <div className="compare-tray-head">
         <span className="compare-tray-title">매물 비교 ({items.length}/2)</span>
         <div className="compare-tray-chips">

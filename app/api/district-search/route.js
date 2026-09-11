@@ -22,8 +22,6 @@ export async function POST(request) {
       dealType,
       pyeong,
       maxBuildAge,
-      desiredRooms,
-      desiredBathrooms,
       budgetMin,
       budgetMax,
       mode, // "estimate" (예산 힌트만) | "search" (매물 후보까지)
@@ -85,8 +83,6 @@ export async function POST(request) {
     const budgetMinNum = budgetMin != null && budgetMin !== "" ? Number(budgetMin) : null;
     const budgetMaxNum = budgetMax != null && budgetMax !== "" ? Number(budgetMax) : null;
     const maxBuildAgeNum = Number(maxBuildAge) > 0 ? Number(maxBuildAge) : 0;
-    const desiredRoomsNum = Number(desiredRooms) > 0 ? Number(desiredRooms) : 0;
-    const desiredBathroomsNum = Number(desiredBathrooms) > 0 ? Number(desiredBathrooms) : 0;
 
     let candidates = [];
     let candidateError = null;
@@ -97,8 +93,6 @@ export async function POST(request) {
         dealType: dealTypeKey,
         pyeong: pyeongNum,
         maxBuildAge: maxBuildAgeNum,
-        desiredRooms: desiredRoomsNum,
-        desiredBathrooms: desiredBathroomsNum,
         budgetMin: budgetMinNum,
         budgetMax: budgetMaxNum,
         // budgetMin/budgetMax로 이미 하드 필터링되므로, 뱃지/지도 색상용 budgetEok도 함께 넘겨

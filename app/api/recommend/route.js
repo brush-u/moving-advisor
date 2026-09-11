@@ -44,8 +44,6 @@ export async function POST(request) {
       houseType, // "apt" | "rh" | "offi"
       dealType, // "trade" | "jeonse" | "wolse"
       maxBuildAge, // 숫자(년) 또는 0/null = 제한 없음
-      desiredRooms, // 숫자 또는 0 = 제한 없음
-      desiredBathrooms, // 숫자 또는 0 = 제한 없음
     } = body;
 
     // 신규 지도 우선 플로우는 지도에서 고른 위치(originLat/Lng)를 우선 사용하고,
@@ -103,8 +101,6 @@ export async function POST(request) {
     const houseTypeKey = HOUSE_TYPES[houseType] ? houseType : "apt";
     const dealTypeKey = DEAL_TYPES[dealType] ? dealType : "trade";
     const maxBuildAgeNum = Number(maxBuildAge) > 0 ? Number(maxBuildAge) : 0;
-    const desiredRoomsNum = Number(desiredRooms) > 0 ? Number(desiredRooms) : 0;
-    const desiredBathroomsNum = Number(desiredBathrooms) > 0 ? Number(desiredBathrooms) : 0;
 
     const safeWeights = {
       price: Number(weights?.price) || 0,
@@ -165,8 +161,6 @@ export async function POST(request) {
               pyeongMin: pyeongIsAll ? null : pyeongMinNum,
               pyeongMax: pyeongIsAll ? null : pyeongMaxNum,
               maxBuildAge: maxBuildAgeNum,
-              desiredRooms: desiredRoomsNum,
-              desiredBathrooms: desiredBathroomsNum,
               budgetMin: budgetMinNum,
               budgetMax: budgetMaxNum,
               // budgetMin/budgetMax로 이미 하드 필터링되므로, 통과한 후보는 전부 "예산 이내"로
@@ -208,8 +202,6 @@ export async function POST(request) {
         dealType: dealTypeKey,
         dealTypeLabel: DEAL_TYPES[dealTypeKey].label,
         maxBuildAge: maxBuildAgeNum,
-        desiredRooms: desiredRoomsNum,
-        desiredBathrooms: desiredBathroomsNum,
         candidateErrors: Object.keys(candidateErrors).length ? candidateErrors : undefined,
       },
     });

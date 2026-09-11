@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { buildDartMarkerHtml, buildPlainMarkerHtml, DART_STAGGER_MS, DART_FLIGHT_MS } from "./dartMarker";
+import { buildDartMarkerHtml, buildPlainMarkerHtml, DART_FLIGHT_MS } from "./dartMarker";
 import { scheduleThwack, vibrateThwack } from "./dartAudio";
 
 let leafletPromise;
@@ -51,6 +51,10 @@ function buildMyLocationHtml() {
  *   클릭하면 onSelect(name, {lat, lng})를 호출합니다(클릭 지점의 정확한 좌표도 함께 넘겨서,
  *   그 지점을 통근시간 계산 기준점으로도 바로 쓸 수 있게 합니다) — "시/도로 찾기" 모드에서
  *   드롭다운 대신 지도를 직접 클릭해 지역을 고를 수 있게 하기 위한 것입니다.
+ * connectors: [{ id, points: [[lat,lng],[lat,lng]], color, tooltip }] — 매물 마커를 클릭했을 때
+ *   그 위치에서 가까운 지하철역/마트/백화점/병원/약국까지 선으로 잇고, 선 위에 항상 보이는
+ *   말풍선(풍선말)으로 시설명·도보시간을 표시합니다(사용자 요청). 보통 클릭한 매물 1건에 대해
+ *   카테고리별 최대 5개 선만 그리므로 상시 표시해도 지도가 복잡해지지 않습니다.
  */
 export default function LeafletMap({
   center,
@@ -67,12 +71,14 @@ export default function LeafletMap({
   focus,
   focusKey,
   sidoBoundaries,
+  connectors,
 }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const layerRef = useRef(null);
   const overlayLayerRef = useRef(null);
   const boundaryLayerRef = useRef(null);
+  const connectorLayerRef = useRef(null);
   const lastDropKeyRef = useRef(undefined);
   const lastFocusKeyRef = useRef(undefined);
   const timeoutsRef = useRef([]);
@@ -99,6 +105,7 @@ export default function LeafletMap({
       boundaryLayerRef.current = L.layerGroup().addTo(map);
       layerRef.current = L.layerGroup().addTo(map);
       overlayLayerRef.current = L.layerGroup().addTo(map);
+      connectorLayerRef.current = L.layerGroup().addTo(map);
       // 기본 확대/축소 컨트롤을 오른쪽 위로 옮겨서, "내 위치 사용" 버튼(지도 위 오버레이)과
       // 세로로 나란히 놓이게 합니다(위치는 globals.css의 .map-locate-btn/.leaflet-control-zoom 참고).
       if (map.zoomControl) map.zoomControl.setPosition("topright");
@@ -204,6 +211,33 @@ export default function LeafletMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sidoBoundaries?.data, sidoBoundaries?.selectedName]);
 
+  // 매물 마커를 클릭했을 때 가까운 시설(지하철역/마트/백화점/병원/약국)까지 잇는 선 + 항상
+  // 보이는 말풍선(풍선말) 오버레이. connectors가 바뀔 때마다(다른 매물을 클릭하거나, 클릭을
+  // 해제해 빈 배열이 될 때) 전부 지우고 다시 그립니다.
+  useEffect(() => {
+    loadLeaflet().then((L) => {
+      if (!mapRef.current || !connectorLayerRef.current) return;
+      connectorLayerRef.current.clearLayers();
+      if (!connectors || connectors.length === 0) return;
+
+      connectors.forEach((c) => {
+        const line = L.polyline(c.points, {
+          color: c.color,
+          weight: 3,
+          opacity: 0.85,
+          dashArray: "4 4",
+        }).addTo(connectorLayerRef.current);
+        if (c.tooltip) {
+          line.bindTooltip(c.tooltip, {
+            permanent: true,
+            direction: "center",
+            className: "poi-connector-tooltip",
+          });
+        }
+      });
+    });
+  }, [connectors]);
+
   // 마커 갱신 (+ 새 검색 결과일 때만 "다트" 낙하 애니메이션/사운드/진동 재생)
   useEffect(() => {
     loadLeaflet().then((L) => {
@@ -211,7 +245,6 @@ export default function LeafletMap({
       layerRef.current.clearLayers();
 
       const isFreshDrop = dropKey != null && dropKey !== lastDropKeyRef.current;
-      let landingIndex = 0;
 
       markers.forEach((m) => {
         const isSelected = m.id === selectedId;
@@ -224,27 +257,29 @@ export default function LeafletMap({
           // 꽂혔던 지역) 다트 모양은 그대로 유지하되 이번 dropKey 갱신에서는 낙하 애니메이션을
           // 다시 재생하지 않습니다 — 안 그러면 새 지역이 도착할 때마다 이미 꽂혀 있던 핀들까지
           // 매번 다시 "파팍" 떨어지는 것처럼 보입니다.
+          //
+          // 예전엔 같은 배치 안에서도 매물마다 landingIndex * DART_STAGGER_MS만큼 순서대로
+          // 텀을 두고 꽂혔는데, 사용자가 "너무 느리다, 텀 없이 빠르게"를 요청해서 없앴습니다
+          // (DART_STAGGER_MS가 이제 항상 0이라 이 배치의 매물은 전부 동시에 날아와 꽂힙니다).
           const shouldAnimateThis = isFreshDrop && !m.settled;
-          const delayMs = shouldAnimateThis ? landingIndex * DART_STAGGER_MS : 0;
           html = buildDartMarkerHtml({
             color: m.color,
             approximate: m.approximate,
             selected: isSelected,
             animate: shouldAnimateThis,
-            delayMs,
+            delayMs: 0,
           });
           iconSize = DART_ICON_SIZE;
           iconAnchor = DART_ICON_ANCHOR;
 
           if (shouldAnimateThis) {
-            const impactDelayMs = delayMs + DART_FLIGHT_MS - 60;
+            const impactDelayMs = DART_FLIGHT_MS - 60;
             timeoutsRef.current.push(setTimeout(() => vibrateThwack(), Math.max(0, impactDelayMs)));
             scheduleThwack(impactDelayMs / 1000);
-            landingIndex += 1;
           }
         } else {
           const size = m.size || (isSelected ? 20 : 13);
-          html = buildPlainMarkerHtml({ color: m.color, size, approximate: m.approximate });
+          html = buildPlainMarkerHtml({ color: m.color, size, approximate: m.approximate, glyph: m.glyph });
           iconSize = [size, size];
           iconAnchor = [size / 2, size / 2];
         }

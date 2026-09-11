@@ -35,19 +35,11 @@ const BUILD_AGE_OPTIONS = [
   { value: "20", label: "20년 이내" },
 ];
 
-const ROOM_OPTIONS = [
-  { value: "0", label: "상관없음" },
-  { value: "1", label: "1룸 이상" },
-  { value: "2", label: "2룸 이상" },
-  { value: "3", label: "3룸 이상" },
-  { value: "4", label: "4룸 이상" },
-];
-
-const BATHROOM_OPTIONS = [
-  { value: "0", label: "상관없음" },
-  { value: "1", label: "1개 이상" },
-  { value: "2", label: "2개 이상" },
-];
+// 예전엔 여기에 "희망 방(룸) 개수"/"희망 화장실 개수" 필터(ROOM_OPTIONS/BATHROOM_OPTIONS)도
+// 있었는데, 국토부 실거래가 API에는 방/화장실 개수 데이터 자체가 없어서 전용면적만 보고
+// 추정한 값으로 필터링하고 있었습니다(lib/roomEstimate.js). 사용자가 "정확하지 않으니
+// 삭제해달라"고 요청해서 이 필터는 없앴습니다 — 추정치 자체는 매물 카드에 참고 정보로만
+// 계속 보여줍니다(예: "2~3룸 · 욕실 1개(추정)").
 
 const DISTRICT_GROUPS = groupDistrictsBySido();
 
@@ -55,6 +47,17 @@ const DISTRICT_GROUPS = groupDistrictsBySido();
 function naverLandUrl(dong, complexName) {
   const q = [dong, complexName].filter(Boolean).join(" ").trim();
   return `https://new.land.naver.com/search?query=${encodeURIComponent(q || "부동산")}`;
+}
+
+// 국토부 API는 거래연/월/일을 각 필드로 따로 주는데, lib/molit.js에서 이미 8자리
+// YYYYMMDD(일자까지 정확한 실제 거래일)로 합쳐서 넘겨줍니다 — 아주 드물게 일자 필드가 없는
+// 옛 데이터면 6자리 YYYYMM(월까지만)으로 대체됩니다. 화면에는 있는 만큼만 보여줍니다.
+function formatDealYmd(dealYmd) {
+  if (!dealYmd) return "미상";
+  const y = dealYmd.slice(0, 4);
+  const mo = dealYmd.slice(4, 6);
+  const d = dealYmd.length >= 8 ? dealYmd.slice(6, 8) : null;
+  return d ? `${y}.${mo}.${d}` : `${y}.${mo}`;
 }
 
 function amountWordFor(dealType) {
@@ -75,8 +78,6 @@ export default function DistrictFlow() {
   const [dealType, setDealType] = useState("trade");
   const [pyeong, setPyeong] = useState("25");
   const [maxBuildAge, setMaxBuildAge] = useState("0");
-  const [desiredRooms, setDesiredRooms] = useState("0");
-  const [desiredBathrooms, setDesiredBathrooms] = useState("0");
 
   const [estimate, setEstimate] = useState(null);
   const [estimating, setEstimating] = useState(false);
@@ -146,8 +147,6 @@ export default function DistrictFlow() {
           dealType,
           pyeong,
           maxBuildAge,
-          desiredRooms,
-          desiredBathrooms,
           budgetMin,
           budgetMax,
           mode: "search",
@@ -321,22 +320,6 @@ export default function DistrictFlow() {
                     ))}
                   </select>
                 </div>
-                <div className="field">
-                  <label htmlFor="rooms2">희망 방(룸) 개수</label>
-                  <select id="rooms2" value={desiredRooms} onChange={(e) => setDesiredRooms(e.target.value)}>
-                    {ROOM_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="field">
-                  <label htmlFor="bathrooms2">희망 화장실 개수</label>
-                  <select id="bathrooms2" value={desiredBathrooms} onChange={(e) => setDesiredBathrooms(e.target.value)}>
-                    {BATHROOM_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </select>
-                </div>
               </div>
             </div>
           )}
@@ -436,7 +419,20 @@ function DistrictCandidateItem({ candidate: c, selected, onClick }) {
   return (
     <div className={`candidate-item selectable ${selected ? "selected" : ""}`} onClick={onClick}>
       <div className="candidate-row1">
-        <span className="candidate-name">{c.complexName}</span>
+        {/* 예전엔 아파트 이름 아래에 "네이버 부동산에서 보기 ↗" 링크를 따로 뒀는데, 사용자
+            요청으로 그 텍스트 링크는 없애고 아파트 이름 자체를 클릭하면 네이버 부동산
+            검색으로 연결되도록 바꿨습니다(RankFlow.js CandidateList와 동일한 처리). 카드
+            전체에 이미 onClick(선택/펼치기)이 걸려 있어서, 이 링크 클릭이 그 상위 클릭까지
+            같이 실행되지 않도록 stopPropagation을 둡니다. */}
+        <a
+          className="candidate-name candidate-name-link"
+          href={naverLandUrl(c.dong, c.complexName)}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {c.complexName}
+        </a>
         <span className="candidate-price">
           <span className="candidate-price-value">
             {isWolse ? `보증금 ${c.totalEok}억 · 월세 ${c.monthlyRentManwon?.toLocaleString?.() ?? c.monthlyRentManwon}만원` : `${c.totalEok}억원`}
@@ -450,22 +446,11 @@ function DistrictCandidateItem({ candidate: c, selected, onClick }) {
           (README 27번). */}
       <div className="candidate-distinguish">
         <span className="candidate-chip">{c.floor ? `${c.floor}층` : "층 미상"}</span>
-        <span className="candidate-chip">
-          거래 {c.dealYmd ? `${c.dealYmd.slice(0, 4)}.${c.dealYmd.slice(4, 6)}` : "미상"}
-        </span>
+        <span className="candidate-chip">거래 {formatDealYmd(c.dealYmd)}</span>
       </div>
       <div className="candidate-meta">
         {c.dong} · {c.pyeong}평({c.areaM2}㎡) · {c.buildYear ? `${c.buildYear}년 준공(${c.age}년차)` : "준공연도 미상"}
       </div>
-      <a
-        className="naver-link"
-        href={naverLandUrl(c.dong, c.complexName)}
-        target="_blank"
-        rel="noopener noreferrer"
-        onClick={(e) => e.stopPropagation()}
-      >
-        네이버 부동산에서 보기 ↗
-      </a>
 
       {selected && (
         <div className="candidate-detail">
@@ -485,7 +470,7 @@ function DistrictCandidateItem({ candidate: c, selected, onClick }) {
             <div>
               {isWolse ? "보증금 / 월세" : "최근 거래가"}
               <strong>{isWolse ? `${c.totalEok}억원 / ${c.monthlyRentManwon?.toLocaleString?.() ?? c.monthlyRentManwon}만원` : `${c.totalEok}억원`}</strong>
-              <span className="note">거래월 {c.dealYmd?.slice(0, 4)}.{c.dealYmd?.slice(4, 6)}</span>
+              <span className="note">거래일 {formatDealYmd(c.dealYmd)}</span>
             </div>
             <div>
               방/화장실
