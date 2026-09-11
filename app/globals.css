@@ -1010,20 +1010,14 @@ h1 {
 }
 
 /* ---- 매물 비교 체크박스 + 선택된 카드 강조 ---- */
-/* 예전엔 이 줄에 "네이버 부동산에서 보기" 링크(왼쪽)와 비교 체크박스(오른쪽)가
-   같이 있어서 justify-content: space-between 으로 체크박스가 오른쪽 끝에 붙어 있었습니다.
-   링크를 없애고 나니 체크박스 혼자 남으면서 flex 규칙상 왼쪽으로 붙어버렸는데(= "아래로
-   내려간 것처럼" 보이는 원인), margin-left: auto 로 다시 오른쪽 끝 원래 위치로 고정합니다. */
-.candidate-row2 {
+/* 비교 체크박스는 아파트명 줄(candidate-row1)의 맨 오른쪽, 가격 옆에 둡니다(사용자 요청).
+   price + checkbox를 이 wrapper로 한 그룹으로 묶어서 candidate-row1의 space-between
+   오른쪽 끝에 통째로 붙입니다. */
+.candidate-row1-right {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 6px;
-}
-
-.candidate-row2 .compare-check {
-  margin-left: auto;
+  gap: 10px;
+  flex: none;
 }
 
 .candidate-item.comparing {
@@ -1062,6 +1056,18 @@ h1 {
 }
 .poi-connector-tooltip::before {
   border-top-color: var(--surface-1);
+}
+
+/* ---- 지도의 매물 마커 팝업 안 "상세정보 보기" 링크 ---- */
+.popup-detail-link {
+  display: inline-block;
+  margin-top: 2px;
+  color: var(--series-price);
+  font-weight: 600;
+  text-decoration: none;
+}
+.popup-detail-link:hover {
+  text-decoration: underline;
 }
 
 /* ---- 지도에서 매물 마커를 클릭해 이동해 온 카드 강조 + 매물 기준 주변 시설 정보 ---- */

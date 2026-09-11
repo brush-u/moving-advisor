@@ -416,22 +416,20 @@ export default function RankFlow() {
     const lawdCd = idStr.split("::")[0];
     setSelectedDistrict(lawdCd);
 
-    // 매물(집) 마커를 클릭한 경우: 지역 카드가 아니라 그 매물 카드로 바로 이동시키고(사용자
-    // 요청 5번), focusedCandidateKey를 기억해 지도에 그 매물 기준 가까운 시설까지 연결선을
-    // 그립니다(사용자 요청 4번). 조건입력 위치처럼 매물이 아닌 마커(지역/지하철역 등)를
-    // 클릭했을 때는 연결선을 지웁니다.
+    // 매물(집) 마커를 클릭한 경우: 예전엔 클릭하자마자 곧바로 매물 카드로 스크롤
+    // 이동시켰는데, 그러면 지도에 뜨는 풍선말(팝업)과 주변 시설 연결선을 볼 새도 없이
+    // 화면이 바로 넘어가 버린다는 피드백을 받았습니다. 이제는 여기서 스크롤 이동을 하지
+    // 않고 focusedCandidateKey만 기억해 지도에 풍선말 + 그 매물 기준 가까운 시설까지의
+    // 연결선(사용자 요청 4번)을 띄우는 데까지만 반응하고, 카드로 이동하는 것은 그 풍선말
+    // 안의 "상세정보 보기" 링크를 눌렀을 때만 일어납니다(candidateMarkers의 popupHtml —
+    // 아래 candidateMarkers 정의 참고). 지역/지하철역 등 매물이 아닌 마커를 클릭했을
+    // 때는 연결선을 지웁니다.
     const candMatch = idStr.match(/^(.+)::cand::(\d+)$/);
     if (candMatch) {
       setFocusedCandidateKey(idStr);
-      const idx = candMatch[2];
-      const cardEl = document.getElementById(`candidate-${lawdCd}-${idx}`);
-      if (cardEl) {
-        cardEl.scrollIntoView({ behavior: "smooth", block: "center" });
-        return;
-      }
-    } else {
-      setFocusedCandidateKey(null);
+      return;
     }
+    setFocusedCandidateKey(null);
 
     const el = document.getElementById(`district-card-${lawdCd}`);
     if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -794,7 +792,16 @@ function Results({ data, selectedDistrict, focusedCandidateKey, onMarkerClick, c
   useEffect(() => {
     setFocusNonce((n) => n + 1);
 
-    const payload = visibleResults
+    // 처음엔 여기서도 visibleResults(현재 화면에 펼쳐진 상위 지역만)를 기준으로 좌표를
+    // 조회했는데, 그러면 "더보기"로 나중에 펼쳐지는 지역은 이 이펙트가 이미 끝난 뒤라 좌표
+    // 조회 자체가 한 번도 일어나지 않아 카드는 목록에 나오는데 지도에는 핀이 하나도 안
+    // 찍히는 상태가 됐습니다(사용자가 "목록과 지도데이터가 달라"라고 신고한 원인). data(추천
+    // 결과 전체)가 새로 나올 때 처음부터 results 전체를 기준으로 한 번에 조회해 두면, 이후
+    // "더보기"로 지역이 추가로 펼쳐져도(=visibleResults만 늘어남) 이미 candidateCoords에
+    // 좌표가 준비돼 있어 즉시 핀이 나타납니다. 실제 Nominatim 지오코딩 총 횟수는 어차피
+    // TOTAL_GEOCODE_BUDGET(공유 상한)으로 이미 묶여 있어서, 지역이 몇 개든 실제 네트워크
+    // 호출 수나 소요 시간은 늘어나지 않습니다(예산 초과분은 지역 중심 근처에 흩뿌려 표시).
+    const payload = data.results
       .map((r) => {
         const d = allDistricts.find((x) => x.lawdCd === r.lawdCd);
         const list = data.candidatesByDistrict?.[r.lawdCd];
@@ -897,11 +904,15 @@ function Results({ data, selectedDistrict, focusedCandidateKey, onMarkerClick, c
           color: budgetFitColor(cand.withinBudget),
           approximate: !c.geocoded,
           landing: true,
+          // 마커를 클릭하면 이 풍선말(팝업)이 뜨고, 안에 있는 "상세정보 보기" 링크를
+          // 눌러야만 그 매물 카드로 스크롤 이동합니다(사용자 요청 — 클릭하자마자 카드로
+          // 넘어가 버리면 이 풍선말도, 지도의 연결선도 볼 수 없다는 피드백을 받아 바꿨습니다).
+          // getElementById 대상은 CandidateList의 id="candidate-{lawdCd}-{idx}"입니다.
           popupHtml: `<strong>${cand.complexName}</strong><br/>${r.sido} ${r.name} ${cand.dong}<br/>${priceLine}${
             near
               ? `<br/>🚇 ${near.station.name}역까지 도보 약 ${walkMinutesFor(near.km)}분(약 ${Math.round(near.km * 1000)}m, 직선거리 기준)`
               : ""
-          }${!c.geocoded ? "<br/><em>(정확한 위치 아님)</em>" : ""}`,
+          }${!c.geocoded ? "<br/><em>(정확한 위치 아님)</em>" : ""}<br/><a href="#" class="popup-detail-link" onclick="document.getElementById('candidate-${r.lawdCd}-${c.idx}').scrollIntoView({behavior:'smooth',block:'center'});return false;">상세정보 보기 →</a>`,
         };
       });
   });
@@ -1303,13 +1314,47 @@ function CandidateList({
                   >
                     {c.complexName}
                   </a>
-                  <span className="candidate-price">
-                    <span className="candidate-price-value">
-                      {isWolse ? `보증금 ${c.totalEok}억 · 월세 ${c.monthlyRentManwon?.toLocaleString?.() ?? c.monthlyRentManwon}만원` : `${c.totalEok}억원`}
+                  {/* 비교 체크박스를 별도 줄(row2)에 두지 않고 아파트명 줄의 맨 오른쪽(가격
+                      옆)으로 옮겼습니다(사용자 요청) — price와 checkbox를 한 그룹으로 묶어
+                      row1의 오른쪽 끝에 배치합니다. */}
+                  <div className="candidate-row1-right">
+                    <span className="candidate-price">
+                      <span className="candidate-price-value">
+                        {isWolse ? `보증금 ${c.totalEok}억 · 월세 ${c.monthlyRentManwon?.toLocaleString?.() ?? c.monthlyRentManwon}만원` : `${c.totalEok}억원`}
+                      </span>
+                      {c.withinBudget === true && <span className="badge budget-ok">예산 이내</span>}
+                      {c.withinBudget === false && <span className="badge budget-over">예산 초과</span>}
                     </span>
-                    {c.withinBudget === true && <span className="badge budget-ok">예산 이내</span>}
-                    {c.withinBudget === false && <span className="badge budget-over">예산 초과</span>}
-                  </span>
+                    {onToggleCompare && (
+                      <label className="compare-check">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(isComparing)}
+                          onChange={() =>
+                            onToggleCompare({
+                              key,
+                              complexName: c.complexName,
+                              dong: c.dong,
+                              districtName,
+                              pyeong: c.pyeong,
+                              areaM2: c.areaM2,
+                              buildYear: c.buildYear,
+                              age: c.age,
+                              floor: c.floor,
+                              totalEok: c.totalEok,
+                              amountManwon: c.amountManwon,
+                              monthlyRentManwon: c.monthlyRentManwon,
+                              dealType: c.dealType,
+                              withinBudget: c.withinBudget,
+                              layout: c.layout,
+                              dealYmd: c.dealYmd,
+                            })
+                          }
+                        />
+                        비교
+                      </label>
+                    )}
+                  </div>
                 </div>
                 {/* 같은 단지가 층·거래시점만 다른 채 여러 건 나올 때(예: 지제역더샵센트럴시티가
                     가격만 다르게 4건 보이는 경우) "가격만 다르고 나머지는 똑같아 보인다"는
@@ -1342,37 +1387,6 @@ function CandidateList({
                     ))}
                   </div>
                 )}
-                <div className="candidate-row2">
-                  {onToggleCompare && (
-                    <label className="compare-check">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(isComparing)}
-                        onChange={() =>
-                          onToggleCompare({
-                            key,
-                            complexName: c.complexName,
-                            dong: c.dong,
-                            districtName,
-                            pyeong: c.pyeong,
-                            areaM2: c.areaM2,
-                            buildYear: c.buildYear,
-                            age: c.age,
-                            floor: c.floor,
-                            totalEok: c.totalEok,
-                            amountManwon: c.amountManwon,
-                            monthlyRentManwon: c.monthlyRentManwon,
-                            dealType: c.dealType,
-                            withinBudget: c.withinBudget,
-                            layout: c.layout,
-                            dealYmd: c.dealYmd,
-                          })
-                        }
-                      />
-                      비교
-                    </label>
-                  )}
-                </div>
               </div>
             );
           })}
